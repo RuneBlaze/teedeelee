@@ -250,11 +250,11 @@ impl PyDistanceMatrixView {
         if item0.is_instance_of::<pyo3::types::PyString>()
             && item1.is_instance_of::<pyo3::types::PyString>()
         {
-            let taxon1: &str = item0.extract()?;
-            let taxon2: &str = item1.extract()?;
+            let taxon1: String = item0.extract()?;
+            let taxon2: String = item1.extract()?;
             return self
                 .inner
-                .get_by_name(taxon1, taxon2)
+                .get_by_name(&taxon1, &taxon2)
                 .map_err(|e| PyValueError::new_err(e));
         }
 

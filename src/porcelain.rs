@@ -450,3 +450,104 @@ impl Default for TreeViewBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::{TreeCollection, MSCTreeCollection};
+
+    #[test]
+    fn test_complete_tree_view_basics() {
+        let newick = "(A:1.0,B:2.0,(C:1.5,D:0.5):2.0);";
+        let view = CompleteTreeView::from_newick_string(newick).unwrap();
+        
+        assert_eq!(view.ngenes(), 1);
+        assert_eq!(view.ntaxa(), 4);
+        assert!(view.get_tree(0).is_some());
+        assert!(view.get_tree(1).is_none());
+        
+        // Test taxon names
+        assert_eq!(view.get_taxon_name(0), Some("A"));
+        assert_eq!(view.get_taxon_name(1), Some("B"));
+        assert_eq!(view.get_taxon_name(4), None);
+    }
+
+    #[test]
+    fn test_topology_tree_view_restriction() {
+        let newick = "(A,B,(C,D));(A,C,(B,D));";
+        let view = TopologyTreeView::from_newick_string(newick).unwrap();
+        
+        assert_eq!(view.ngenes(), 2);
+        
+        // Restrict to taxa A, B
+        let restricted = view.restriction(&["A", "B"]).unwrap();
+        assert_eq!(restricted.ntaxa(), 2);
+        assert_eq!(restricted.ngenes(), 2);
+        
+        // Test invalid taxon
+        assert!(view.restriction(&["A", "X"]).is_err());
+    }
+
+    #[test]
+    fn test_distance_matrix_view() {
+        let newick = "(A:1.0,B:2.0,(C:1.5,D:0.5):2.0);";
+        let view = CompleteTreeView::from_newick_string(newick).unwrap();
+        
+        let matrix = view.get_distance_matrix(0).unwrap();
+        
+        // Test matrix access
+        assert_eq!(matrix.get(0, 0), 0.0); // Distance to self is 0
+        assert!(matrix.get_by_name("A", "B").is_ok());
+        assert!(matrix.get_by_name("A", "X").is_err());
+        
+        // Test indexing
+        assert_eq!(matrix[(0, 1)], matrix.get(0, 1));
+        assert_eq!(matrix[(1, 0)], matrix.get(0, 1)); // Symmetric
+    }
+
+    #[test]
+    fn test_msc_tree_view() {
+        let mut collection = MSCTreeCollection::new();
+        let gene_trees = TreeCollection::from_newick_string("(A,B,(C,D));(A,C,(B,D));").unwrap();
+        let species_tree = gene_trees.trees[0].clone();
+        collection.gene_trees = gene_trees.trees;
+        collection.taxon_set = gene_trees.taxon_set;
+        collection.species_tree = species_tree;
+        let view = MSCTreeView::new(collection);
+        
+        assert_eq!(view.ngenes(), 2);
+        assert_eq!(view.ntaxa(), 4);
+        
+        // Test restriction
+        let restricted = view.restriction(&["A", "B"]).unwrap();
+        assert_eq!(restricted.ntaxa(), 2);
+        assert_eq!(restricted.ngenes(), 2);
+    }
+
+    #[test]
+    fn test_tree_view_slicing() {
+        let newick = "(A,B);(C,D);(E,F);";
+        let view = CompleteTreeView::from_newick_string(newick).unwrap();
+        let view_clone = view.clone();  // Clone before moving
+        
+        let sliced = view.slice(1, 3);
+        assert_eq!(sliced.ngenes(), 2);
+        assert_eq!(sliced.ntaxa(), view_clone.ntaxa());
+        
+        let topology_view = view_clone.as_topology();
+        assert_eq!(topology_view.ngenes(), sliced.ngenes());
+    }
+
+    #[test]
+    fn test_newick_conversion() {
+        let newick = "(A:1.0,B:2.0);(C:1.5,D:0.5);";
+        let view = CompleteTreeView::from_newick_string(newick).unwrap();
+        
+        let newick_vec = view.to_newick_vec();
+        assert_eq!(newick_vec.len(), 2);
+        
+        let newick_string = view.to_newick_string();
+        assert!(newick_string.contains("A:1.0"));
+        assert!(newick_string.contains("D:0.5"));
+    }
+}
