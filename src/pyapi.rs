@@ -2,36 +2,52 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 use std::sync::Arc;
+use std::collections::{HashSet, HashMap, BTreeMap};
 
 use crate::porcelain::{CompleteTreeView, DistanceMatrixView, MSCTreeView, TopologyTreeView};
-use crate::tree::{MSCTreeCollection, TreeCollection};
+use crate::tree::{MSCTreeCollection, TaxonSet, Tree, TreeCollection};
 
 /// A Python wrapper for CompleteTreeView
-#[pyclass(name = "CompleteTreeView")]
+#[pyclass(name = "TreeSet")]
 #[derive(Clone)]
 pub struct PyCompleteTreeView {
     inner: CompleteTreeView,
 }
 
 /// A Python wrapper for TopologyTreeView
-#[pyclass(name = "TopologyTreeView")]
+#[pyclass(name = "TopologySet")]
 #[derive(Clone)]
 pub struct PyTopologyTreeView {
     inner: TopologyTreeView,
 }
 
 /// A Python wrapper for MSCTreeView
-#[pyclass(name = "MSCTreeView")]
+#[pyclass(name = "MSCTreeSet")]
 #[derive(Clone)]
 pub struct PyMSCTreeView {
     inner: MSCTreeView,
 }
 
 /// A Python wrapper for DistanceMatrixView
-#[pyclass(name = "DistanceMatrixView")]
+#[pyclass(name = "DistanceMatrix")]
 #[derive(Clone)]
 pub struct PyDistanceMatrixView {
     inner: DistanceMatrixView,
+}
+
+/// A Python wrapper for a single tree with its taxon set
+#[pyclass(name = "Tree")]
+#[derive(Clone)]
+pub struct PySingleTree {
+    taxon_set: Arc<TaxonSet>,
+    tree: Arc<Tree>,
+}
+
+/// A Python wrapper for TaxonSet providing read-only access
+#[pyclass(name = "TaxonSet")]
+#[derive(Clone)]
+pub struct PyTaxonSet {
+    inner: Arc<TaxonSet>,
 }
 
 #[pymethods]
@@ -80,6 +96,24 @@ impl PyCompleteTreeView {
     fn as_topology(&self) -> PyTopologyTreeView {
         PyTopologyTreeView {
             inner: self.inner.clone().as_topology(),
+        }
+    }
+
+    fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
+        if index >= self.inner.ngenes() {
+            return Err(PyValueError::new_err("Tree index out of bounds"));
+        }
+        
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(&self.inner.0.taxon_set),
+            tree: Arc::new(self.inner.0.trees[index].clone()),
+        })
+    }
+
+    #[getter]
+    fn taxon_set(&self) -> PyTaxonSet {
+        PyTaxonSet {
+            inner: Arc::clone(&self.inner.0.taxon_set)
         }
     }
 }
@@ -133,6 +167,24 @@ impl PyTopologyTreeView {
             .restriction(&taxa_refs)
             .map(|inner| PyTopologyTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
+    }
+
+    fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
+        if index >= self.inner.ngenes() {
+            return Err(PyValueError::new_err("Tree index out of bounds"));
+        }
+        
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(&self.inner.0.taxon_set),
+            tree: Arc::new(self.inner.0.trees[index].clone()),
+        })
+    }
+
+    #[getter]
+    fn taxon_set(&self) -> PyTaxonSet {
+        PyTaxonSet {
+            inner: Arc::clone(&self.inner.0.taxon_set)
+        }
     }
 }
 
@@ -215,6 +267,31 @@ impl PyMSCTreeView {
             .map(|inner| PyMSCTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
     }
+
+    fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
+        if index >= self.inner.ngenes() {
+            return Err(PyValueError::new_err("Tree index out of bounds"));
+        }
+        
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(&self.inner.base.taxon_set),
+            tree: Arc::new(self.inner.base.trees[index].clone()),
+        })
+    }
+
+    fn get_species_tree(&self) -> PySingleTree {
+        PySingleTree {
+            taxon_set: Arc::clone(&self.inner.base.taxon_set),
+            tree: Arc::clone(&self.inner.species_tree),
+        }
+    }
+
+    #[getter]
+    fn taxon_set(&self) -> PyTaxonSet {
+        PyTaxonSet {
+            inner: Arc::clone(&self.inner.base.taxon_set)
+        }
+    }
 }
 
 #[pymethods]
@@ -275,5 +352,165 @@ impl PyDistanceMatrixView {
         Err(PyValueError::new_err(
             "Index must be either (int, int) or (str, str)",
         ))
+    }
+
+    #[getter]
+    fn taxon_set(&self) -> PyTaxonSet {
+        PyTaxonSet {
+            inner: Arc::clone(&self.inner.taxon_set)
+        }
+    }
+}
+
+#[pymethods]
+impl PySingleTree {
+    #[new]
+    fn new(newick_str: &str) -> PyResult<Self> {
+        let collection = TreeCollection::from_newick_string(newick_str)
+            .map_err(|e| PyValueError::new_err(e))?;
+        
+        if collection.trees.is_empty() {
+            return Err(PyValueError::new_err("No tree found in input string"));
+        }
+
+        Ok(PySingleTree {
+            taxon_set: Arc::new(collection.taxon_set),
+            tree: Arc::new(collection.trees[0].clone()),
+        })
+    }
+
+    #[getter]
+    fn ntaxa(&self) -> usize {
+        self.taxon_set.len()
+    }
+
+    fn get_taxon_name(&self, id: usize) -> Option<String> {
+        self.taxon_set.names.get(id).map(String::from)
+    }
+
+    fn get_distance_matrix(&self) -> PyDistanceMatrixView {
+        PyDistanceMatrixView {
+            inner: DistanceMatrixView {
+                matrix: Arc::new(self.tree.distance_matrix()),
+                taxon_set: Arc::clone(&self.taxon_set),
+            }
+        }
+    }
+
+    fn to_newick(&self) -> String {
+        // Helper function to write tree recursively
+        fn write_subtree(tree: &Tree, node: usize, taxon_set: &TaxonSet, result: &mut String) {
+            if tree.is_leaf(node) {
+                result.push_str(&taxon_set.names[tree.taxa[node] as usize]);
+            } else {
+                result.push('(');
+                let mut first = true;
+                for child in tree.children(node) {
+                    if !first {
+                        result.push(',');
+                    }
+                    first = false;
+                    write_subtree(tree, child, taxon_set, result);
+                    if tree.lengths[child] >= 0.0 {
+                        result.push(':');
+                        result.push_str(&tree.lengths[child].to_string());
+                    }
+                }
+                result.push(')');
+            }
+        }
+
+        let mut result = String::new();
+        write_subtree(&self.tree, 0, &self.taxon_set, &mut result);
+        result.push(';');
+        result
+    }
+
+    fn restriction(&self, taxa: Vec<String>) -> PyResult<Self> {
+        // Convert taxa strings to a HashSet of taxon IDs
+        let mut keep_taxa = HashSet::new();
+        for taxon in &taxa {
+            if let Some(id) = self.taxon_set.to_id.get(taxon.as_str()) {
+                keep_taxa.insert(*id);
+            } else {
+                return Err(PyValueError::new_err(format!("Taxon '{}' not found in tree", taxon)));
+            }
+        }
+
+        // Create new taxon set and mapping
+        let mut new_taxon_set = TaxonSet::new();
+        let mut id_map = HashMap::new();
+        for taxon in taxa {
+            let old_id = self.taxon_set.to_id[&taxon];
+            let new_id = new_taxon_set.request(taxon);
+            id_map.insert(old_id, new_id);
+        }
+
+        // Restrict the tree
+        let new_tree = self.tree.restrict(&keep_taxa, &id_map);
+
+        Ok(PySingleTree {
+            taxon_set: Arc::new(new_taxon_set),
+            tree: Arc::new(new_tree),
+        })
+    }
+
+    fn get_taxa(&self) -> Vec<String> {
+        self.taxon_set.names.clone()
+    }
+
+    fn __str__(&self) -> String {
+        self.to_newick()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SingleTree('{}')", self.to_newick())
+    }
+
+    #[getter]
+    fn taxon_set(&self) -> PyTaxonSet {
+        PyTaxonSet {
+            inner: Arc::clone(&self.taxon_set)
+        }
+    }
+}
+
+#[pymethods]
+impl PyTaxonSet {
+    #[getter]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn get_id(&self, taxon_name: &str) -> Option<usize> {
+        self.inner.to_id.get(taxon_name).copied()
+    }
+
+    fn get_name(&self, id: usize) -> Option<String> {
+        if id < self.inner.names.len() {
+            Some(self.inner.names[id].clone())
+        } else {
+            None
+        }
+    }
+
+    fn get_names(&self) -> Vec<String> {
+        self.inner.names.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __str__(&self) -> String {
+        format!("TaxonSet with {} taxa", self.inner.len())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TaxonSet({})", self.inner.names.join(", "))
+    }
+
+    fn __contains__(&self, item: &str) -> bool {
+        self.inner.to_id.contains_key(item)
     }
 }

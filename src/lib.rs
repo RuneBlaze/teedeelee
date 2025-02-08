@@ -6,7 +6,6 @@ mod tree;
 
 use pyapi::{PyCompleteTreeView, PyDistanceMatrixView, PyMSCTreeView, PyTopologyTreeView};
 
-/// A Python module implemented in Rust.
 #[pymodule]
 fn teedeelee(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add the Python classes to the module
@@ -14,6 +13,7 @@ fn teedeelee(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTopologyTreeView>()?;
     m.add_class::<PyMSCTreeView>()?;
     m.add_class::<PyDistanceMatrixView>()?;
-
+    m.add_class::<pyapi::PySingleTree>()?;
+    m.add_class::<pyapi::PyTaxonSet>()?;
     Ok(())
 }

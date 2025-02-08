@@ -9,32 +9,32 @@ use std::sync::Arc;
 
 // Common functionality shared between Complete and Topology views
 #[derive(Clone, Debug)]
-struct TreeViewBase {
-    taxon_set: Arc<TaxonSet>,
-    trees: Arc<[Tree]>,
+pub(crate) struct TreeViewBase {
+    pub(crate) taxon_set: Arc<TaxonSet>,
+    pub(crate) trees: Arc<[Tree]>,
 }
 
 /// A thread-safe, shareable view of a tree collection with complete information
 /// (including branch lengths and support values).
 #[derive(Clone)]
-pub struct CompleteTreeView(TreeViewBase);
+pub struct CompleteTreeView(pub(crate) TreeViewBase);
 
 /// A thread-safe, shareable view of a tree collection with topology-only information
 #[derive(Clone)]
-pub struct TopologyTreeView(TreeViewBase);
+pub struct TopologyTreeView(pub(crate) TreeViewBase);
 
 /// A thread-safe, shareable view of a multi-species coalescent tree collection
 #[derive(Clone)]
 pub struct MSCTreeView {
-    base: TreeViewBase,
-    species_tree: Arc<Tree>,
+    pub(crate) base: TreeViewBase,
+    pub(crate) species_tree: Arc<Tree>,
 }
 
 /// A thread-safe, shareable view of a distance matrix
 #[derive(Clone)]
 pub struct DistanceMatrixView {
-    matrix: Arc<DistanceMatrix>,
-    taxon_set: Arc<TaxonSet>,
+    pub(crate) matrix: Arc<DistanceMatrix>,
+    pub(crate) taxon_set: Arc<TaxonSet>,
 }
 
 impl DistanceMatrixView {

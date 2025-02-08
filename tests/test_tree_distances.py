@@ -1,6 +1,6 @@
 import pytest
 import treeswift
-from teedeelee import CompleteTreeView, TopologyTreeView
+from teedeelee import TreeSet, TopologySet
 from hypothesis import given, settings, strategies as st
 import random
 
@@ -15,7 +15,7 @@ def test_basic_topology_distances():
     
     # Parse with both libraries
     ts_tree = parse_treeswift(newick)
-    td_tree = TopologyTreeView(newick)
+    td_tree = TopologySet(newick)
     
     # Get distance matrices
     td_dist = td_tree.get_distance_matrix(0)
@@ -41,7 +41,7 @@ def test_branch_length_distances():
     
     # Parse with both libraries
     ts_tree = parse_treeswift(newick)
-    td_tree = CompleteTreeView(newick)
+    td_tree = TreeSet(newick)
     
     # Get distance matrices and node mapping
     td_dist = td_tree.get_distance_matrix(0)
@@ -72,7 +72,7 @@ def test_topology_restriction():
     
     # Parse with both libraries
     ts_tree = parse_treeswift(newick)
-    td_tree = TopologyTreeView(newick)
+    td_tree = TopologySet(newick)
     
     # Restrict to subset of taxa
     subset = ["A", "C", "D"]
@@ -102,7 +102,7 @@ def test_complex_topology():
     
     # Parse with both libraries
     ts_tree = parse_treeswift(newick)
-    td_tree = TopologyTreeView(newick)
+    td_tree = TopologySet(newick)
     
     # Get distance matrices and node mapping
     td_dist = td_tree.get_distance_matrix(0)
@@ -127,7 +127,7 @@ def test_complex_topology():
 def test_error_handling():
     """Test error handling for invalid inputs"""
     newick = "((A:1,B:1):1,(C:1,D:1):1);"
-    td_tree = TopologyTreeView(newick)
+    td_tree = TopologySet(newick)
     
     # Test restriction with invalid taxon
     with pytest.raises(Exception):
@@ -144,7 +144,7 @@ def test_unrooted_tree():
     newick = "(A:1,B:1,C:1,D:1);"
     
     ts_tree = parse_treeswift(newick)
-    td_tree = CompleteTreeView(newick)
+    td_tree = TreeSet(newick)
     
     td_dist = td_tree.get_distance_matrix(0)
     ts_nodes = ts_tree.label_to_node(selection='leaves')
@@ -221,7 +221,7 @@ def test_random_tree_distances(taxa):
     
     # Parse with both libraries
     ts_tree = retopologize_ts_tree(parse_treeswift(newick))
-    td_tree = CompleteTreeView(newick)
+    td_tree = TreeSet(newick)
     
     # Get distance matrices and node mapping
     td_dist = td_tree.get_distance_matrix(0)
@@ -247,7 +247,7 @@ def test_random_tree_restriction_distances(taxa):
     
     # Parse with both libraries
     ts_tree = parse_treeswift(newick)
-    td_tree = TopologyTreeView(newick)
+    td_tree = TopologySet(newick)
     
     # Choose a random subset of taxa (at least 3 taxa)
     subset_size = random.randint(3, len(taxa))
@@ -275,7 +275,7 @@ def test_random_tree_restriction_distances(taxa):
 def test_restriction_edge_cases():
     """Test edge cases for tree restriction operations"""
     newick = "((A:1,B:1):1,(C:1,D:1):1);"
-    td_tree = TopologyTreeView(newick)
+    td_tree = TopologySet(newick)
     
     # Test restriction to minimum size (2 taxa)
     min_subset = ["A", "B"]
