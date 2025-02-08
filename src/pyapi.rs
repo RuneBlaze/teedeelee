@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::porcelain::{
     CompleteTreeView, DistanceMatrixView, MSCTreeView, TopologyTreeView, TreeViewBase, TreeViewType,
 };
-use crate::tree::{MSCTreeCollection, TaxonSet, Tree, TreeCollection};
+use crate::tree::{parse_newick, MSCTreeCollection, SortCriterion, SortCriterionKind, SortOrder, TaxonSet, Tree, TreeCollection};
 
 /// A Python wrapper for CompleteTreeView
 #[pyclass(name = "TreeSet")]
@@ -64,6 +64,39 @@ pub struct PyMSCTopologyTreeView {
 #[derive(Clone)]
 pub struct PyFamilyOfMSC {
     views: Vec<Arc<PyMSCTopologyTreeView>>,
+}
+
+/// Add these enum definitions for Python
+#[pyclass(name = "SortCriterionKind")]
+#[derive(Clone, Copy)]
+pub enum PySortCriterionKind {
+    LexicographicalOrder,
+    ChildCount,
+    DescendantCount,
+}
+
+#[pyclass(name = "SortOrder")]
+#[derive(Clone, Copy)]
+pub enum PySortOrder {
+    Ascending,
+    Descending,
+}
+
+/// Add this struct for Python
+#[pyclass(name = "SortCriterion")]
+#[derive(Clone)]
+pub struct PySortCriterion {
+    kind: PySortCriterionKind,
+    order: PySortOrder,
+}
+
+/// Add these as proper Python enums
+#[pyclass(name = "SortBy")]
+#[derive(Clone, Copy)]
+pub enum PySortBy {
+    LexicographicalOrder,
+    ChildCount,
+    DescendantCount,
 }
 
 #[pymethods]
@@ -202,6 +235,14 @@ impl PyCompleteTreeView {
             .map(|inner| PyCompleteTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
     }
+
+    /// Relabels taxa according to the provided mapping
+    fn remap(&self, mapping: HashMap<String, String>) -> PyResult<Self> {
+        self.inner
+            .remap(&mapping)
+            .map(|inner| PyCompleteTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
+    }
 }
 
 #[pymethods]
@@ -301,6 +342,14 @@ impl PyTopologyTreeView {
             .map(|inner| PyTopologyTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
     }
+
+    /// Relabels taxa according to the provided mapping
+    fn remap(&self, mapping: HashMap<String, String>) -> PyResult<Self> {
+        self.inner
+            .remap(&mapping)
+            .map(|inner| PyTopologyTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
+    }
 }
 
 #[pymethods]
@@ -315,16 +364,15 @@ impl PyMSCTreeView {
         collection.taxon_set = gene_collection.taxon_set;
         collection.gene_trees = gene_collection.trees;
 
-        // Parse species tree
-        let species_collection = TreeCollection::from_newick_string(species_tree, false)
-            .map_err(|e| PyValueError::new_err(e))?;
-        if !species_collection.trees.is_empty() {
-            collection.species_tree = species_collection.trees[0].clone();
-        } else {
-            return Err(PyValueError::new_err(
-                "No species tree found in input string",
-            ));
+        // Parse species tree directly using parse_newick
+        let species_tree = parse_newick(&mut collection.taxon_set, species_tree);
+        
+        // Verify the species tree is valid
+        if species_tree.ntaxa == 0 {
+            return Err(PyValueError::new_err("No species tree found in input string"));
         }
+
+        collection.species_tree = species_tree;
 
         Ok(PyMSCTreeView {
             inner: MSCTreeView::new(collection),
@@ -405,20 +453,13 @@ impl PyMSCTreeView {
     }
 
     fn get_species_tree(&self) -> PySingleTree {
-        let tree = self
-            .inner
-            .species_tree
-            .get_tree(0)
-            .expect("Species tree should always have exactly one tree");
-
         let taxon_set = match &self.inner.base {
-            TreeViewType::Complete(base) => &base.taxon_set,
-            TreeViewType::Topology(base) => &base.taxon_set,
+            TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
         };
 
         PySingleTree {
             taxon_set: Arc::clone(taxon_set),
-            tree: Arc::new(tree.clone()),
+            tree: Arc::new(self.inner.species_tree.clone()),
         }
     }
 
@@ -476,6 +517,14 @@ impl PyMSCTreeView {
         })?;
 
         PyMSCTreeView::new(&gene_trees, &species_tree)
+    }
+
+    /// Relabels taxa according to the provided mapping
+    fn remap(&self, mapping: HashMap<String, String>) -> PyResult<Self> {
+        self.inner
+            .remap(&mapping)
+            .map(|inner| PyMSCTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
     }
 }
 
@@ -545,6 +594,43 @@ impl PyDistanceMatrixView {
             inner: Arc::clone(&self.inner.taxon_set),
         }
     }
+
+    fn __str__(&self) -> String {
+        let n = self.inner.ntaxa();
+        let mut result = String::new();
+        
+        // Add header row with taxon names
+        result.push_str("      "); // Padding for row labels
+        for j in 0..n {
+            if let Some(name) = self.inner.get_taxon_name(j) {
+                result.push_str(&format!("{:>8}", name));
+            }
+        }
+        result.push('\n');
+        
+        // Add matrix rows
+        for i in 0..n {
+            if let Some(name) = self.inner.get_taxon_name(i) {
+                result.push_str(&format!("{:<6}", name));
+            }
+            for j in 0..n {
+                let val = self.inner.get(i, j);
+                // Check if the value is effectively an integer
+                if (val - val.round()).abs() < f64::EPSILON {
+                    result.push_str(&format!("{:8.0}", val));
+                } else {
+                    result.push_str(&format!("{:8.3}", val));
+                }
+            }
+            result.push('\n');
+        }
+        
+        result
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DistanceMatrix(size={})", self.inner.ntaxa())
+    }
 }
 
 #[pymethods]
@@ -596,10 +682,10 @@ impl PySingleTree {
                     }
                     first = false;
                     write_subtree(tree, child, taxon_set, result);
-                    if tree.lengths[child] >= 0.0 {
-                        result.push(':');
-                        result.push_str(&tree.lengths[child].to_string());
-                    }
+                    // if tree.lengths[child] >= 0.0 {
+                    //     result.push(':');
+                    //     result.push_str(&tree.lengths[child].to_string());
+                    // }
                 }
                 result.push(')');
             }
@@ -665,6 +751,97 @@ impl PySingleTree {
     fn __len__(&self) -> usize {
         self.tree.num_nodes()
     }
+
+    /// Relabels taxa according to the provided mapping
+    fn remap(&self, mapping: HashMap<String, String>) -> PyResult<Self> {
+        // Create a TreeViewBase to use its remap functionality
+        let view_base = TreeViewBase {
+            taxon_set: Arc::clone(&self.taxon_set),
+            trees: Arc::new([(*self.tree).clone()]),
+            topology_only: false,
+        };
+
+        view_base.remap(&mapping).map(|new_base| PySingleTree {
+            taxon_set: Arc::clone(&new_base.taxon_set),
+            tree: Arc::new(new_base.trees[0].clone()),
+        }).map_err(|e| PyValueError::new_err(e))
+    }
+
+    /// Sort the tree by a single criterion
+    fn sort_by(&self, criterion: PySortBy, ascending: Option<bool>) -> PyResult<Self> {
+        let order = ascending.unwrap_or(true);
+        let criterion = SortCriterion {
+            kind: match criterion {
+                PySortBy::LexicographicalOrder => SortCriterionKind::LexicographicalOrder,
+                PySortBy::ChildCount => SortCriterionKind::ChildCount,
+                PySortBy::DescendantCount => SortCriterionKind::DescendantCount,
+            },
+            order: if order { SortOrder::Ascending } else { SortOrder::Descending },
+        };
+
+        let mut new_tree = (*self.tree).clone();
+        new_tree.sort(&self.taxon_set, &[criterion]);
+
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(&self.taxon_set),
+            tree: Arc::new(new_tree),
+        })
+    }
+
+    /// Sort the tree by multiple criteria
+    fn sort_by_multiple(&self, criteria: Vec<(PySortBy, Option<bool>)>) -> PyResult<Self> {
+        let rust_criteria: Vec<SortCriterion> = criteria
+            .into_iter()
+            .map(|(criterion, ascending)| {
+                let order = ascending.unwrap_or(true);
+                SortCriterion {
+                    kind: match criterion {
+                        PySortBy::LexicographicalOrder => SortCriterionKind::LexicographicalOrder,
+                        PySortBy::ChildCount => SortCriterionKind::ChildCount,
+                        PySortBy::DescendantCount => SortCriterionKind::DescendantCount,
+                    },
+                    order: if order { SortOrder::Ascending } else { SortOrder::Descending },
+                }
+            })
+            .collect();
+
+        let mut new_tree = (*self.tree).clone();
+        new_tree.sort(&self.taxon_set, &rust_criteria);
+
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(&self.taxon_set),
+            tree: Arc::new(new_tree),
+        })
+    }
+
+    /// Sort the tree according to the given criteria
+    fn sort(&self, criteria: Vec<PySortCriterion>) -> PyResult<Self> {
+        // Convert Python criteria to Rust criteria
+        let rust_criteria: Vec<SortCriterion> = criteria
+            .into_iter()
+            .map(|c| SortCriterion {
+                kind: match c.kind {
+                    PySortCriterionKind::LexicographicalOrder => SortCriterionKind::LexicographicalOrder,
+                    PySortCriterionKind::ChildCount => SortCriterionKind::ChildCount,
+                    PySortCriterionKind::DescendantCount => SortCriterionKind::DescendantCount,
+                },
+                order: match c.order {
+                    PySortOrder::Ascending => SortOrder::Ascending,
+                    PySortOrder::Descending => SortOrder::Descending,
+                },
+            })
+            .collect();
+
+        // Create a new tree and sort it
+        let mut new_tree = (*self.tree).clone();
+        new_tree.sort(&self.taxon_set, &rust_criteria);
+
+        // Return new PySingleTree with sorted tree
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(&self.taxon_set),
+            tree: Arc::new(new_tree),
+        })
+    }
 }
 
 #[pymethods]
@@ -686,7 +863,7 @@ impl PyTaxonSet {
         }
     }
 
-    fn get_names(&self) -> Vec<String> {
+    fn names(&self) -> Vec<String> {
         self.inner.names.clone()
     }
 
@@ -711,9 +888,26 @@ impl PyTaxonSet {
 impl PyMSCTopologyTreeView {
     #[new]
     fn new(gene_trees: &str, species_tree: &str) -> PyResult<Self> {
-        let msc_view = PyMSCTreeView::new(gene_trees, species_tree)?;
+        let mut collection = MSCTreeCollection::new(true); // Note: true for topology-only
+
+        // Parse gene trees
+        let gene_collection = TreeCollection::from_newick_string(gene_trees, true)
+            .map_err(|e| PyValueError::new_err(e))?;
+        collection.taxon_set = gene_collection.taxon_set;
+        collection.gene_trees = gene_collection.trees;
+
+        // Parse species tree directly
+        let mut species_tree = parse_newick(&mut collection.taxon_set, species_tree);
+        
+        // Verify the species tree is valid
+        if species_tree.ntaxa == 0 {
+            return Err(PyValueError::new_err("No species tree found in input string"));
+        }
+
+        collection.species_tree = species_tree;
+
         Ok(PyMSCTopologyTreeView {
-            inner: msc_view.inner.as_topology(),
+            inner: MSCTreeView::new(collection).as_topology(),
         })
     }
 
@@ -779,20 +973,13 @@ impl PyMSCTopologyTreeView {
     }
 
     fn get_species_tree(&self) -> PySingleTree {
-        let tree = self
-            .inner
-            .species_tree
-            .get_tree(0)
-            .expect("Species tree should always have exactly one tree");
-
         let taxon_set = match &self.inner.base {
-            TreeViewType::Complete(base) => &base.taxon_set,
-            TreeViewType::Topology(base) => &base.taxon_set,
+            TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
         };
 
         PySingleTree {
             taxon_set: Arc::clone(taxon_set),
-            tree: Arc::new(tree.clone()),
+            tree: Arc::new(self.inner.species_tree.clone()),
         }
     }
 
@@ -845,6 +1032,14 @@ impl PyMSCTopologyTreeView {
 
         let view = PyMSCTopologyTreeView::new(&gene_trees, &species_tree)?;
         Ok(view)
+    }
+
+    /// Relabels taxa according to the provided mapping
+    fn remap(&self, mapping: HashMap<String, String>) -> PyResult<Self> {
+        self.inner
+            .remap(&mapping)
+            .map(|inner| PyMSCTopologyTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
     }
 }
 
@@ -899,5 +1094,55 @@ impl PyFamilyOfMSC {
             .get(index)
             .map(|view| (**view).clone())
             .ok_or_else(|| PyValueError::new_err("Index out of bounds"))
+    }
+}
+
+#[pymethods]
+impl PySortCriterionKind {
+    #[classmethod]
+    fn lexicographical(_cls: Bound<'_, PyType>) -> Self {
+        Self::LexicographicalOrder
+    }
+
+    #[classmethod]
+    fn child_count(_cls: Bound<'_, PyType>) -> Self {
+        Self::ChildCount
+    }
+
+    #[classmethod]
+    fn descendant_count(_cls: Bound<'_, PyType>) -> Self {
+        Self::DescendantCount
+    }
+}
+
+#[pymethods]
+impl PySortOrder {
+    #[classmethod]
+    fn ascending(_cls: Bound<'_, PyType>) -> Self {
+        Self::Ascending
+    }
+
+    #[classmethod]
+    fn descending(_cls: Bound<'_, PyType>) -> Self {
+        Self::Descending
+    }
+}
+
+#[pymethods]
+impl PySortCriterion {
+    #[new]
+    fn new(kind: PySortCriterionKind, order: PySortOrder) -> Self {
+        Self { kind, order }
+    }
+}
+
+#[pymethods]
+impl PySortBy {
+    fn __str__(&self) -> String {
+        match self {
+            Self::LexicographicalOrder => "lexicographical".to_string(),
+            Self::ChildCount => "child_count".to_string(),
+            Self::DescendantCount => "descendant_count".to_string(),
+        }
     }
 }

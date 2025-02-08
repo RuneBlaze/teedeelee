@@ -36,7 +36,7 @@ pub enum TreeViewType {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MSCTreeView {
     pub(crate) base: TreeViewType,
-    pub(crate) species_tree: TreeViewType,
+    pub(crate) species_tree: Tree,
 }
 
 /// A thread-safe, shareable view of a distance matrix
@@ -223,6 +223,11 @@ impl CompleteTreeView {
             .map(Self::new)
             .map_err(|e| e.to_string())
     }
+
+    /// Relabels taxa according to the provided mapping
+    pub fn remap(&self, mapping: &HashMap<String, String>) -> Result<Self, String> {
+        self.0.remap(mapping).map(CompleteTreeView)
+    }
 }
 
 impl TopologyTreeView {
@@ -276,6 +281,11 @@ impl TopologyTreeView {
         TreeCollection::from_newick_string(newick_str, true)
             .map(Self::new)
             .map_err(|e| e.to_string())
+    }
+
+    /// Relabels taxa according to the provided mapping
+    pub fn remap(&self, mapping: &HashMap<String, String>) -> Result<Self, String> {
+        self.0.remap(mapping).map(TopologyTreeView)
     }
 }
 
@@ -413,32 +423,63 @@ impl TreeViewType {
             }),
         })
     }
+
+    /// Relabels taxa according to the provided mapping
+    pub fn remap(&self, mapping: &HashMap<String, String>) -> Result<Self, String> {
+        match self {
+            Self::Complete(base) => base.remap(mapping).map(Self::Complete),
+            Self::Topology(base) => base.remap(mapping).map(Self::Topology),
+        }
+    }
 }
 
 impl MSCTreeView {
     pub fn new(collection: MSCTreeCollection) -> Self {
+        // Use the shared taxon set from the gene trees as the merged taxon set.
+        let merged_taxon_set = collection.taxon_set.clone();
+
+        // Build an identity mapping (should be the identity if the taxon set is shared)
+        let mut gene_mapping: HashMap<usize, usize> = HashMap::new();
+        for (name, &old_id) in &collection.taxon_set.to_id {
+            let new_id = merged_taxon_set.to_id[name];
+            gene_mapping.insert(old_id, new_id);
+        }
+
+        // Remap each gene tree (this will be identity mapping if everything is shared)
+        let remapped_gene_trees = collection
+            .gene_trees
+            .into_iter()
+            .map(|mut tree| {
+                tree.remap_taxa(&gene_mapping);
+                tree
+            })
+            .collect::<Vec<_>>();
+
+        // Remap the species tree using the same mapping
+        let mut species_mapping: HashMap<usize, usize> = HashMap::new();
+        for (name, &old_id) in &collection.taxon_set.to_id {
+            let new_id = merged_taxon_set.to_id[name];
+            species_mapping.insert(old_id, new_id);
+        }
+        let mut species_tree = collection.species_tree;
+        species_tree.remap_taxa(&species_mapping);
+
         let base = TreeViewType::Complete(TreeViewBase {
-            taxon_set: Arc::new(collection.taxon_set),
-            trees: Arc::from(collection.gene_trees),
+            taxon_set: Arc::new(merged_taxon_set),
+            trees: Arc::from(remapped_gene_trees),
             topology_only: collection.topology_only,
         });
 
-        let species_tree = TreeViewType::Complete(TreeViewBase {
-            taxon_set: Arc::clone(match &base {
-                TreeViewType::Complete(b) => &b.taxon_set,
-                TreeViewType::Topology(b) => &b.taxon_set,
-            }),
-            trees: Arc::from(vec![collection.species_tree]),
-            topology_only: collection.topology_only,
-        });
-
-        MSCTreeView { base, species_tree }
+        MSCTreeView {
+            base,
+            species_tree,
+        }
     }
 
     pub fn as_topology(self) -> Self {
         MSCTreeView {
             base: self.base.as_topology(),
-            species_tree: self.species_tree.as_topology(),
+            species_tree: self.species_tree,
         }
     }
 
@@ -454,7 +495,7 @@ impl MSCTreeView {
     pub fn slice(&self, start: usize, end: usize) -> Self {
         MSCTreeView {
             base: self.base.slice(start, end),
-            species_tree: self.species_tree.clone(), // Species tree doesn't get sliced
+            species_tree: self.species_tree.clone(),
         }
     }
 
@@ -463,8 +504,12 @@ impl MSCTreeView {
     }
 
     pub fn get_species_distance_matrix(&self) -> DistanceMatrixView {
-        // Assuming species_tree always has exactly one tree
-        self.species_tree.get_distance_matrix(0).unwrap()
+        DistanceMatrixView {
+            matrix: Arc::new(self.species_tree.distance_matrix()),
+            taxon_set: match &self.base {
+                TreeViewType::Complete(base) | TreeViewType::Topology(base) => Arc::clone(&base.taxon_set),
+            },
+        }
     }
 
     pub fn get_taxon_name(&self, id: usize) -> Option<&str> {
@@ -480,13 +525,48 @@ impl MSCTreeView {
     }
 
     pub fn species_tree_to_newick(&self) -> String {
-        self.species_tree.to_newick_string()
+        let collection = TreeCollectionView {
+            taxon_set: match &self.base {
+                TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
+            },
+            trees: std::slice::from_ref(&self.species_tree),
+        };
+        collection.to_newick_string()
     }
 
     pub fn restriction(&self, taxa: &[&str]) -> Result<Self, String> {
+        // First restrict the base trees
+        let restricted_base = self.base.restriction(taxa)?;
+        
+        // Get the new taxon set after restriction
+        let new_taxon_set = match &restricted_base {
+            TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
+        };
+
+        // Convert taxa strings to a HashSet of taxon IDs
+        let mut keep_taxa = HashSet::new();
+        for taxon in taxa {
+            if let Some(id) = self.taxon_set().to_id.get(*taxon) {
+                keep_taxa.insert(*id);
+            } else {
+                return Err(format!("Taxon '{}' not found in tree", taxon));
+            }
+        }
+
+        // Create mapping from old to new taxon IDs
+        let mut id_map = HashMap::new();
+        for taxon in taxa {
+            let old_id = self.taxon_set().to_id[*taxon];
+            let new_id = new_taxon_set.to_id[*taxon];
+            id_map.insert(old_id, new_id);
+        }
+
+        // Restrict the species tree
+        let restricted_species_tree = self.species_tree.restrict(&keep_taxa, &id_map);
+
         Ok(MSCTreeView {
-            base: self.base.restriction(taxa)?,
-            species_tree: self.species_tree.restriction(taxa)?,
+            base: restricted_base,
+            species_tree: restricted_species_tree,
         })
     }
 
@@ -502,6 +582,38 @@ impl MSCTreeView {
         match &self.base {
             TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
         }
+    }
+
+    /// Relabels taxa according to the provided mapping
+    pub fn remap(&self, mapping: &HashMap<String, String>) -> Result<Self, String> {
+        // First remap the base trees
+        let remapped_base = self.base.remap(mapping)?;
+        
+        // Create new taxon set with remapped names
+        let new_taxon_set = match &remapped_base {
+            TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
+        };
+
+        // Create mapping from old to new taxon IDs for the species tree
+        let mut species_mapping = HashMap::new();
+        for (old_name, &old_id) in &self.taxon_set().to_id {
+            if let Some(new_name) = mapping.get(old_name) {
+                let new_id = new_taxon_set.to_id[new_name];
+                species_mapping.insert(old_id, new_id);
+            } else {
+                // Keep original mapping if taxon not in mapping
+                species_mapping.insert(old_id, old_id);
+            }
+        }
+
+        // Remap the species tree
+        let mut remapped_species_tree = self.species_tree.clone();
+        remapped_species_tree.remap_taxa(&species_mapping);
+
+        Ok(MSCTreeView {
+            base: remapped_base,
+            species_tree: remapped_species_tree,
+        })
     }
 }
 
@@ -568,5 +680,50 @@ impl TreeViewBuilder {
 impl Default for TreeViewBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl TreeViewBase {
+    /// Relabels taxa according to the provided mapping. The mapping must be bijective 
+    /// (one-to-one and onto) between the existing taxon names and new taxon names.
+    pub fn remap(&self, mapping: &HashMap<String, String>) -> Result<Self, String> {
+        // Verify the mapping is bijective by checking:
+        // 1. All current taxa are mapped
+        // 2. No two taxa map to the same new name
+        // 3. Number of mappings equals number of taxa
+        
+        let current_taxa: HashSet<_> = self.taxon_set.names.iter().cloned().collect();
+        let mapped_names: HashSet<_> = mapping.values().cloned().collect();
+        
+        if mapping.len() != self.taxon_set.len() {
+            return Err("Mapping must contain exactly one entry for each taxon".to_string());
+        }
+        
+        for name in &current_taxa {
+            if !mapping.contains_key(name) {
+                return Err(format!("No mapping provided for taxon '{}'", name));
+            }
+        }
+        
+        if mapped_names.len() != mapping.len() {
+            return Err("Mapping is not one-to-one (multiple taxa mapped to same name)".to_string());
+        }
+
+        // Create new taxon set with remapped names
+        let mut new_taxon_set = TaxonSet::new();
+        
+        // Maintain the same ordering as the original taxon set
+        for old_name in &self.taxon_set.names {
+            let new_name = mapping.get(old_name).unwrap();  // Safe due to checks above
+            new_taxon_set.request(new_name.clone());
+        }
+
+        // Create new TreeViewBase with remapped taxon set
+        // Trees remain unchanged since the internal structure uses indices
+        Ok(TreeViewBase {
+            taxon_set: Arc::new(new_taxon_set),
+            trees: Arc::clone(&self.trees),
+            topology_only: self.topology_only,
+        })
     }
 }

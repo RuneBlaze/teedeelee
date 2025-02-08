@@ -206,8 +206,7 @@ impl Tree {
             }
         }
 
-        // Return Some(tree) instead of just tree at the end
-        Some(Tree {
+        let suppressed_tree = Tree {
             taxa: new_taxa,
             parents: new_parents,
             support: new_support,
@@ -217,7 +216,15 @@ impl Tree {
             childcount: new_childcount,
             fake_root: self.fake_root,
             ntaxa: self.ntaxa,
-        })
+        };
+
+        // If the suppressed tree's root (node 0) has a single child then unwrap it by re-rooting.
+        if suppressed_tree.childcount[0] == 1 {
+            let new_root = suppressed_tree.firstchild[0] as usize;
+            return Some(suppressed_tree.re_root(new_root));
+        }
+
+        Some(suppressed_tree)
     }
 
     /// Creates a restricted version of the tree containing only the specified taxa,
@@ -355,6 +362,195 @@ impl Tree {
             if let Some(&new_id) = id_map.get(&(*taxon_id as usize)) {
                 *taxon_id = new_id as i32;
             }
+        }
+    }
+
+    /// Sorts the children of each node according to the given criteria.
+    /// Earlier criteria in the list take precedence over later ones.
+    pub fn sort(&mut self, taxon_set: &TaxonSet, criteria: &[SortCriterion]) {
+        // First compute all the data we need for comparisons
+        let descendant_counts = if criteria.iter().any(|c| c.kind == SortCriterionKind::DescendantCount) {
+            let mut counts = vec![0usize; self.taxa.len()];
+            for node in self.postorder() {
+                counts[node] = if self.is_leaf(node) {
+                    1
+                } else {
+                    self.children(node).map(|c| counts[c]).sum()
+                }
+            }
+            Some(counts)
+        } else {
+            None
+        };
+
+        // Pre-collect sorted children vectors for each node
+        let mut sorted_children: Vec<Vec<usize>> = vec![Vec::new(); self.taxa.len()];
+        for node in self.postorder() {
+            sorted_children[node] = self.children(node).collect();
+        }
+
+        // Define a helper function for recursive comparison
+        fn compare_nodes_recursive(
+            a: usize,
+            b: usize,
+            taxon_set: &TaxonSet,
+            tree: &Tree,
+            criteria: &[SortCriterion],
+            sorted_children: &Vec<Vec<usize>>,
+            descendant_counts: Option<&Vec<usize>>,
+        ) -> std::cmp::Ordering {
+            for criterion in criteria {
+                let mut cmp = match criterion.kind {
+                    SortCriterionKind::LexicographicalOrder => {
+                        if tree.is_leaf(a) && tree.is_leaf(b) {
+                            let name_a = &taxon_set.names[tree.taxa[a] as usize];
+                            let name_b = &taxon_set.names[tree.taxa[b] as usize];
+                            name_a.cmp(name_b)
+                        } else if tree.is_leaf(a) || tree.is_leaf(b) {
+                            let val_a = if tree.is_leaf(a) { &taxon_set.names[tree.taxa[a] as usize] } else { "" };
+                            let val_b = if tree.is_leaf(b) { &taxon_set.names[tree.taxa[b] as usize] } else { "" };
+                            val_a.cmp(val_b)
+                        } else {
+                            let children_a = &sorted_children[a];
+                            let children_b = &sorted_children[b];
+                            for (child_a, child_b) in children_a.iter().zip(children_b.iter()) {
+                                let child_cmp = compare_nodes_recursive(*child_a, *child_b, taxon_set, tree, criteria, sorted_children, descendant_counts);
+                                if child_cmp != std::cmp::Ordering::Equal {
+                                    return child_cmp;
+                                }
+                            }
+                            children_a.len().cmp(&children_b.len())
+                        }
+                    },
+                    SortCriterionKind::ChildCount => tree.childcount[a].cmp(&tree.childcount[b]),
+                    SortCriterionKind::DescendantCount => {
+                        if let Some(ref counts) = descendant_counts {
+                            counts[a].cmp(&counts[b])
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    }
+                };
+                if criterion.order == SortOrder::Descending {
+                    cmp = cmp.reverse();
+                }
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
+            }
+            std::cmp::Ordering::Equal
+        }
+
+        // Sort children of each node
+        for node in 0..self.taxa.len() {
+            if self.childcount[node] <= 1 {
+                continue;
+            }
+
+            // Create an immutable snapshot of sorted_children to avoid borrow conflicts
+            let snapshot = sorted_children.clone();
+
+            // Sort children according to criteria using the snapshot
+            sorted_children[node].sort_by(|&a, &b| {
+                compare_nodes_recursive(a, b, taxon_set, self, criteria, &snapshot, descendant_counts.as_ref())
+            });
+            
+            // Update the tree structure with the new ordering
+            self.firstchild[node] = sorted_children[node][0] as i32;
+            for i in 0..sorted_children[node].len() - 1 {
+                self.nextsib[sorted_children[node][i]] = sorted_children[node][i + 1] as i32;
+            }
+            self.nextsib[sorted_children[node][sorted_children[node].len() - 1]] = -1;
+        }
+    }
+
+    /// Re-roots the tree at `new_root`, doing a DFS re-indexing so that the node formerly at `new_root`
+    /// becomes index 0 and all pointers (parents, children) are updated accordingly.
+    fn re_root(&self, new_root: usize) -> Tree {
+        use std::collections::HashMap;
+        // Map from old indices to new indices (in DFS order)
+        let mut new_index_map: HashMap<usize, usize> = HashMap::new();
+        let mut stack = vec![new_root];
+        let mut order = Vec::new(); // Order in which nodes are visited
+
+        while let Some(n) = stack.pop() {
+            if new_index_map.contains_key(&n) {
+                continue;
+            }
+            let new_idx = new_index_map.len();
+            new_index_map.insert(n, new_idx);
+            order.push(n);
+
+            // Collect children of node `n`
+            let mut children = Vec::new();
+            let mut child = self.firstchild[n];
+            while child != -1 {
+                children.push(child as usize);
+                child = self.nextsib[child as usize];
+            }
+            // Push children in reverse order so that the left-most child is processed first.
+            for &c in children.iter().rev() {
+                stack.push(c);
+            }
+        }
+
+        let new_n = order.len();
+        let mut taxa = vec![0; new_n];
+        let mut parents = vec![0; new_n];
+        let mut support = vec![0.0; new_n];
+        let mut lengths = vec![0.0; new_n];
+        let mut firstchild = vec![-1; new_n];
+        let mut nextsib = vec![-1; new_n];
+        let mut childcount = vec![0; new_n];
+
+        // Copy over the field values and update parent pointers using the mapping.
+        for (new_idx, &old_idx) in order.iter().enumerate() {
+            taxa[new_idx] = self.taxa[old_idx];
+            support[new_idx] = self.support[old_idx];
+            lengths[new_idx] = self.lengths[old_idx];
+            if new_idx == 0 {
+                // New root: no parent.
+                parents[new_idx] = 0;
+            } else {
+                let old_parent = self.parents[old_idx] as usize;
+                parents[new_idx] = *new_index_map.get(&old_parent).unwrap() as i32;
+            }
+        }
+
+        // Reconstruct child pointers by gathering children using the new indices.
+        let mut children_map: Vec<Vec<usize>> = vec![Vec::new(); new_n];
+        for i in 1..new_n {
+            let p = parents[i] as usize;
+            children_map[p].push(i);
+        }
+        for i in 0..new_n {
+            if !children_map[i].is_empty() {
+                firstchild[i] = children_map[i][0] as i32;
+                childcount[i] = children_map[i].len() as u32;
+                for (j, &child) in children_map[i].iter().enumerate() {
+                    if j < children_map[i].len() - 1 {
+                        nextsib[child] = children_map[i][j + 1] as i32;
+                    } else {
+                        nextsib[child] = -1;
+                    }
+                }
+            } else {
+                childcount[i] = 0;
+            }
+        }
+
+        // Recompute number of leaves (taxa) if needed.
+        let ntaxa = taxa.iter().filter(|&&t| t != -1).count();
+        Tree {
+            taxa,
+            parents,
+            support,
+            lengths,
+            firstchild,
+            nextsib,
+            childcount,
+            fake_root: false,
+            ntaxa,
         }
     }
 }
@@ -866,5 +1062,34 @@ impl DistanceMatrix {
         }
 
         matrix
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortCriterion {
+    pub kind: SortCriterionKind,
+    pub order: SortOrder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortCriterionKind {
+    LexicographicalOrder,
+    ChildCount,
+    DescendantCount,
+}
+
+impl SortCriterion {
+    pub fn ascending(kind: SortCriterionKind) -> Self {
+        SortCriterion { kind, order: SortOrder::Ascending }
+    }
+
+    pub fn descending(kind: SortCriterionKind) -> Self {
+        SortCriterion { kind, order: SortOrder::Descending }
     }
 }
