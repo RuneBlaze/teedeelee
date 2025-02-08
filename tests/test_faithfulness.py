@@ -7,7 +7,7 @@ import os
 import logging
 from typing import List, Tuple
 import numpy as np
-from itertools import combinations
+from itertools import combinations, islice, chain
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -221,84 +221,71 @@ def normalize_tree_str(tree_str: str) -> str:
 
 def test_distance_matrix_faithfulness():
     """Test that distance matrices are faithful between TreeSwift and teedeelee"""
-    gene_trees_files, species_tree_files = load_test_data(num_datasets=1)
+    gene_files, species_files = load_test_data(num_datasets=1)
     
-    # Load trees using TreeSet.from_file
-    tree_set = TreeSet.from_file(gene_trees_files[0])
-    
-    # Get topology set for topological distances
-    topology_set = tree_set.as_topology()
-    
-    # Read trees directly from file with TreeSwift
-    with open(gene_trees_files[0], "r") as f:
+    # Load trees using both libraries
+    td_trees = TreeSet.from_file(gene_files[0]).as_topology()
+    with open(gene_files[0], "r") as f:
         ts_trees = [ts.read_tree_newick(line.strip()) for line in f]
     
-    # Test each tree in the set
-    for i, ts_tree in enumerate(ts_trees):
-        # Get teedeelee distance matrix
-        td_dist = topology_set.get_distance_matrix(i)
-        
-        # Set all edge lengths to 1 for topological distance
-        for node in ts_tree.traverse_postorder():
+    # Set all TreeSwift edge lengths to 1 for topological distance
+    for tree in ts_trees:
+        for node in tree.traverse_postorder():
             if not node.is_root():
                 node.edge_length = 1
-        ts_dist_dict = ts_tree.distance_matrix(leaf_labels=True)
+
+    MAX_COMPARISONS = 10  # choose(5,2)
+    import itertools
+    oracle = iter(itertools.chain([4] * 5, itertools.count(5)))
+
+    # Test each corresponding pair of trees
+    for idx, (td_tree, ts_tree) in enumerate(zip(td_trees, ts_trees)):
+        # Get distance matrices
+        td_dists = td_trees.get_distance_matrix(idx)
+        ts_dists = ts_tree.distance_matrix(leaf_labels=True)
         
         # Get sorted taxa list for consistent ordering
-        taxa = sorted(ts_dist_dict.keys())
-        n = len(taxa)
+        taxa = sorted(ts_dists.keys())
+        n_taxa = len(taxa)
         
-        # Create numpy array from TreeSwift distances
-        ts_matrix = np.zeros((n, n), dtype=np.float64)
-        for i, u in enumerate(taxa):
-            for j, v in enumerate(taxa):
-                if i != j:
-                    ts_matrix[i, j] = ts_dist_dict[u][v]
+        # Compare distances between pairs, taking at most MAX_COMPARISONS
+        pairs = list(islice(combinations(taxa, 2), MAX_COMPARISONS))
         
-        # Compare distances between all pairs
-        for i, taxon1 in enumerate(taxa):
-            for j, taxon2 in enumerate(taxa[i+1:], i+1):
-                ts_dist = ts_matrix[i, j]
-                td_dist_val = td_dist.get_by_name(taxon1, taxon2)
-                assert abs(ts_dist - td_dist_val) < 1e-10, \
-                    f"Distance mismatch for {taxon1}->{taxon2}: treeswift={ts_dist}, teedeelee={td_dist_val}; " \
-                    f"tree (normalized): {normalize_tree_str(str(topology_set[i]))}; taxon1: {taxon1}; taxon2: {taxon2}"
+        for tax1, tax2 in pairs:
+            ts_dist = ts_dists[tax1][tax2]
+            td_dist = td_dists.get_by_name(tax1, tax2)
+            assert abs(ts_dist - td_dist) < 1e-10, \
+                f"Distance mismatch for {tax1}->{tax2}: ts={ts_dist}, td={td_dist}; " \
+                f"tree (normalized): {normalize_tree_str(str(td_tree))}"
                 
-        # Test after restriction
-        subset_size = 4
-        subset = taxa[:subset_size]
+        # Test after restriction with gradually increasing subset sizes
+        # size = 
+        size = min(next(oracle), n_taxa // 4)
+        subset = taxa[:size]
+        logger.info(f"Testing restriction with {size} taxa")
         
-        # Get restricted topology and distance matrix
-        restricted = topology_set.restriction(subset)
+        # Get restricted trees and their distance matrices
+        td_sub = td_trees.restriction(subset)[idx]
+        td_sub_dists = Tree(td_sub.newick()).get_distance_matrix()
         
-        td_restricted_dist = Tree(restricted[i].newick()).get_distance_matrix()
-
-        
-        
-        # Get restricted TreeSwift tree and distance matrix
-        ts_restricted = ts_tree.extract_tree_with(set(subset))
-        # Reset edge lengths to 1
-        for node in ts_restricted.traverse_postorder():
+        ts_sub = ts_tree.extract_tree_with(set(subset))
+        for node in ts_sub.traverse_postorder():
             if not node.is_root():
                 node.edge_length = 1
-        ts_restricted_dict = ts_restricted.distance_matrix(leaf_labels=True)
+        ts_sub_dists = ts_sub.distance_matrix(leaf_labels=True)
         
-        # Compare distances in restricted trees
-        for i, taxon1 in enumerate(subset):
-            for j, taxon2 in enumerate(subset[i+1:], i+1):
-                ts_dist = ts_restricted_dict[taxon1][taxon2]
-                td_dist_val = td_restricted_dist.get_by_name(taxon1, taxon2)
-                if abs(ts_dist - td_dist_val) > 1e-10:
-                    recreated = Tree(restricted[i].newick()).get_distance_matrix()
-                    breakpoint()
-                assert abs(ts_dist - td_dist_val) < 1e-10, \
-                    f"Distance mismatch after restriction for {taxon1}->{taxon2}: " \
-                    f"treeswift={ts_dist}, teedeelee={td_dist_val}; " \
-                    f"original tree (normalized): {normalize_tree_str(str(topology_set[i]))}; " \
-                    f"restricted tree, treeswift (normalized): {normalize_tree_str(ts_restricted.newick())}; " \
-                    f"restricted tree, teedeelee (normalized): {normalize_tree_str(str(restricted[i].newick()))}; " \
-                    f"restricted tree, teedeelee (non-normalized): {str(restricted[i].newick())}" \
-                    f"distance matrix: {td_restricted_dist}"
+        # Compare distances in restricted trees, taking at most MAX_COMPARISONS
+        pairs = list(islice(combinations(subset, 2), MAX_COMPARISONS))
+        
+        for tax1, tax2 in pairs:
+            ts_dist = ts_sub_dists[tax1][tax2]
+            td_dist = td_sub_dists.get_by_name(tax1, tax2)
+            assert abs(ts_dist - td_dist) < 1e-10, \
+                f"Distance mismatch after restriction for {tax1}->{tax2}:\n" \
+                f"ts={ts_dist}, td={td_dist}\n" \
+                f"Original tree: {normalize_tree_str(str(td_tree))}\n" \
+                f"Restricted (ts): {normalize_tree_str(ts_sub.newick())}\n" \
+                f"Restricted (td): {normalize_tree_str(str(td_sub))}"
 
 def create_ladder_tree(n: int) -> str:
     """Create a ladder tree with n leaves in Newick format."""

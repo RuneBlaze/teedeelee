@@ -32,7 +32,7 @@ def normalize_tree_str(tree_str: str) -> str:
 def main():
     # A simple test tree
     # tree_str = "(0,((100,10),1));"
-    tree_str = "(((1,10),100),0);"
+    tree_str = '(((1,10),100),0);'
 
     # Create both TreeSwift and teedeelee trees
     ts_tree = ts.read_tree_newick(tree_str)
@@ -52,6 +52,8 @@ def main():
 
     # teedeelee distances
     td_dist = td_tree.get_distance_matrix()
+
+    print(td_dist)
 
     print("\nDistances between 0 and 1:")
     print(f"TreeSwift distance: {ts_dist_dict['0']['1']}")
