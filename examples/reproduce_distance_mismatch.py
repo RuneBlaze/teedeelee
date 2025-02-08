@@ -5,6 +5,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 def normalize_tree_str(tree_str: str) -> str:
     """Normalize a tree string by removing rooted markers and standardizing format"""
     # Remove rooted marker and any whitespace
@@ -13,26 +14,27 @@ def normalize_tree_str(tree_str: str) -> str:
     tree_str = tree_str.replace(":1", "")
     # Remove semicolon
     tree_str = tree_str.strip(";")
-    
+
     # Use TreeSwift to standardize the tree format
     ts_tree = ts.read_tree_newick(tree_str + ";")
     ts_tree.order("num_descendants_then_label")
     ts_tree.suppress_unifurcations()
     normalized = ts_tree.newick()
-    
+
     # Clean up the normalized string
     normalized = normalized.strip(";")
     normalized = normalized.replace(":1.0", "")
 
     while normalized.startswith("((") and normalized.endswith("))"):
         normalized = normalized[1:-1]
-    
+
     return normalized.strip()
+
 
 def main():
     # A simple test tree
     # tree_str = "(0,((100,10),1));"
-    tree_str = '(((1,10),100),0);'
+    tree_str = "(((1,10),100),0);"
 
     # Create both TreeSwift and teedeelee trees
     ts_tree = ts.read_tree_newick(tree_str)
@@ -59,5 +61,6 @@ def main():
     print(f"TreeSwift distance: {ts_dist_dict['0']['1']}")
     print(f"teedeelee distance: {td_dist.get_by_name('0', '1')}")
 
+
 if __name__ == "__main__":
-    main() 
+    main()
