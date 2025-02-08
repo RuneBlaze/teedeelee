@@ -1,10 +1,10 @@
 use ahash::AHashSet;
 use rand::prelude::*;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{HashSet};
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
-use std::{cmp::max, cmp::min, collections::BTreeMap, collections::HashMap};
+use std::{cmp::min, collections::BTreeMap, collections::HashMap};
 
 #[derive(Debug, Clone)]
 pub struct TaxonSet {
