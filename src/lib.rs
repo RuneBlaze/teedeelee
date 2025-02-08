@@ -19,5 +19,6 @@ fn teedeelee(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<pyapi::PySortOrder>()?;
     m.add_class::<pyapi::PySortCriterion>()?;
     m.add_class::<pyapi::PySortBy>()?;
+    m.add_class::<pyapi::PyFamilyOfMSC>()?;
     Ok(())
 }

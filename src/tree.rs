@@ -1,5 +1,4 @@
 use ahash::AHashSet;
-use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::File;

@@ -1,7 +1,9 @@
-from teedeelee import MSCTreeSet, SortCriterion, SortCriterionKind, SortOrder, SortBy
+from teedeelee import MSCTreeSet, SortCriterion, SortCriterionKind, SortOrder, SortBy, FamilyOfMSC
 from smallperm import PseudoRandomPermutation as PRP
 import treeswift as ts
 import logging
+
+import cramjam
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,13 +64,23 @@ def random_projection_rust(gene_trees_file: str, species_tree_file: str, target_
     
     # Load trees using Rust implementation
     msctree = MSCTreeSet.from_files(gene_trees_file, species_tree_file)
+    family = FamilyOfMSC.from_files([gene_trees_file], [species_tree_file])
     logger.info(f"Loaded {msctree.ngenes} gene trees with {msctree.ntaxa} taxa")
-    
+
+    import pickle as pkl
+    # Number of bytes in the pickled object
+    dumped = pkl.dumps(msctree)
+    logger.info(f"Pickled object size: {len(dumped)} bytes. This is {len(dumped) / 1024 / 1024} MB.")
     # Get all taxon names
     names = msctree.taxon_set.names()
     N = len(names)
     logger.info(f"Total taxa: {N}")
     logger.info(f"Original taxa names: {names[:5]}...")
+
+    logger.info(f"Family of MSC: {family}")
+    logger.info(f"Family of MSC size: {len(family)}")
+    dumped = pkl.dumps(family)
+    logger.info(f"Pickled family of MSC size: {len(dumped)} bytes. This is {len(dumped) / 1024 / 1024} MB.")
 
     sorted_names = sorted(names)
     logger.info(f"Sorted taxa names: {sorted_names[:5]}...")

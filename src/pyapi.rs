@@ -1,44 +1,45 @@
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple, PyType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use bincode;
+use zstd;
 
 use crate::porcelain::{
     CompleteTreeView, DistanceMatrixView, MSCTreeView, TopologyTreeView, TreeViewBase, TreeViewType,
 };
 use crate::tree::{parse_newick, MSCTreeCollection, SortCriterion, SortCriterionKind, SortOrder, TaxonSet, Tree, TreeCollection};
 
-/// A Python wrapper for CompleteTreeView
-#[pyclass(name = "TreeSet")]
+#[pyclass(name = "TreeSet", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyCompleteTreeView {
     inner: CompleteTreeView,
 }
 
 /// A Python wrapper for TopologyTreeView
-#[pyclass(name = "TopologySet")]
+#[pyclass(name = "TopologySet", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyTopologyTreeView {
     inner: TopologyTreeView,
 }
 
 /// A Python wrapper for MSCTreeView
-#[pyclass(name = "MSCTreeSet")]
+#[pyclass(name = "MSCTreeSet", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyMSCTreeView {
     inner: MSCTreeView,
 }
 
 /// A Python wrapper for DistanceMatrixView
-#[pyclass(name = "DistanceMatrix")]
+#[pyclass(name = "DistanceMatrix", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyDistanceMatrixView {
     inner: DistanceMatrixView,
 }
 
 /// A Python wrapper for a single tree with its taxon set
-#[pyclass(name = "Tree")]
+#[pyclass(name = "Tree", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PySingleTree {
     taxon_set: Arc<TaxonSet>,
@@ -46,53 +47,53 @@ pub struct PySingleTree {
 }
 
 /// A Python wrapper for TaxonSet providing read-only access
-#[pyclass(name = "TaxonSet")]
+#[pyclass(name = "TaxonSet", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyTaxonSet {
     inner: Arc<TaxonSet>,
 }
 
 /// A Python wrapper for MSCTreeView in topology-only mode
-#[pyclass(name = "MSCTopologySet")]
+#[pyclass(name = "MSCTopologySet", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyMSCTopologyTreeView {
     inner: MSCTreeView,
 }
 
 /// A Python wrapper for a collection of MSC topology tree views
-#[pyclass(name = "FamilyOfMSC")]
+#[pyclass(name = "FamilyOfMSC", module = "teedeelee")]
 #[derive(Clone)]
 pub struct PyFamilyOfMSC {
     views: Vec<Arc<PyMSCTopologyTreeView>>,
 }
 
 /// Add these enum definitions for Python
-#[pyclass(name = "SortCriterionKind")]
-#[derive(Clone, Copy)]
+#[pyclass(name = "SortCriterionKind", eq, eq_int, module = "teedeelee")]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum PySortCriterionKind {
     LexicographicalOrder,
     ChildCount,
     DescendantCount,
 }
 
-#[pyclass(name = "SortOrder")]
-#[derive(Clone, Copy)]
+#[pyclass(name = "SortOrder", eq, eq_int, module = "teedeelee")]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum PySortOrder {
     Ascending,
     Descending,
 }
 
 /// Add this struct for Python
-#[pyclass(name = "SortCriterion")]
-#[derive(Clone)]
+#[pyclass(name = "SortCriterion", eq, module = "teedeelee")]
+#[derive(Clone, Eq, PartialEq)]
 pub struct PySortCriterion {
     kind: PySortCriterionKind,
     order: PySortOrder,
 }
 
 /// Add these as proper Python enums
-#[pyclass(name = "SortBy")]
-#[derive(Clone, Copy)]
+#[pyclass(name = "SortBy", eq, eq_int, module = "teedeelee")]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum PySortBy {
     LexicographicalOrder,
     ChildCount,
@@ -243,6 +244,17 @@ impl PyCompleteTreeView {
             .map(|inner| PyCompleteTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
     }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        bincode::serialize(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        self.inner = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -349,6 +361,17 @@ impl PyTopologyTreeView {
             .remap(&mapping)
             .map(|inner| PyTopologyTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
+    }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        bincode::serialize(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        self.inner = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        Ok(())
     }
 }
 
@@ -526,6 +549,17 @@ impl PyMSCTreeView {
             .map(|inner| PyMSCTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
     }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        bincode::serialize(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        self.inner = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -631,6 +665,17 @@ impl PyDistanceMatrixView {
     fn __repr__(&self) -> String {
         format!("DistanceMatrix(size={})", self.inner.ntaxa())
     }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        bincode::serialize(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        self.inner = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -682,10 +727,6 @@ impl PySingleTree {
                     }
                     first = false;
                     write_subtree(tree, child, taxon_set, result);
-                    // if tree.lengths[child] >= 0.0 {
-                    //     result.push(':');
-                    //     result.push_str(&tree.lengths[child].to_string());
-                    // }
                 }
                 result.push(')');
             }
@@ -768,6 +809,7 @@ impl PySingleTree {
     }
 
     /// Sort the tree by a single criterion
+    #[pyo3(signature = (criterion, ascending=None))]
     fn sort_by(&self, criterion: PySortBy, ascending: Option<bool>) -> PyResult<Self> {
         let order = ascending.unwrap_or(true);
         let criterion = SortCriterion {
@@ -842,6 +884,20 @@ impl PySingleTree {
             tree: Arc::new(new_tree),
         })
     }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        let state = (Arc::as_ref(&self.taxon_set), Arc::as_ref(&self.tree));
+        bincode::serialize(&state)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        let (taxon_set, tree): (TaxonSet, Tree) = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        self.taxon_set = Arc::new(taxon_set);
+        self.tree = Arc::new(tree);
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -882,6 +938,18 @@ impl PyTaxonSet {
     fn __contains__(&self, item: &str) -> bool {
         self.inner.to_id.contains_key(item)
     }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        bincode::serialize(Arc::as_ref(&self.inner))
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        let taxon_set: TaxonSet = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        self.inner = Arc::new(taxon_set);
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -897,7 +965,7 @@ impl PyMSCTopologyTreeView {
         collection.gene_trees = gene_collection.trees;
 
         // Parse species tree directly
-        let mut species_tree = parse_newick(&mut collection.taxon_set, species_tree);
+        let species_tree = parse_newick(&mut collection.taxon_set, species_tree);
         
         // Verify the species tree is valid
         if species_tree.ntaxa == 0 {
@@ -1041,6 +1109,17 @@ impl PyMSCTopologyTreeView {
             .map(|inner| PyMSCTopologyTreeView { inner })
             .map_err(|e| PyValueError::new_err(e))
     }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        bincode::serialize(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        self.inner = bincode::deserialize(state)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -1093,7 +1172,38 @@ impl PyFamilyOfMSC {
         self.views
             .get(index)
             .map(|view| (**view).clone())
-            .ok_or_else(|| PyValueError::new_err("Index out of bounds"))
+            .ok_or_else(|| PyIndexError::new_err("Index out of bounds"))
+    }
+
+    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
+        // Convert Arc<PyMSCTopologyTreeView> to Vec<MSCTreeView>
+        let views: Vec<MSCTreeView> = self.views.iter()
+            .map(|view| view.inner.clone())
+            .collect();
+        
+        // First serialize with bincode
+        let serialized = bincode::serialize(&views)
+            .map_err(|e| PyValueError::new_err(format!("Serialization error: {}", e)))?;
+        
+        // Then compress with zstd
+        zstd::encode_all(serialized.as_slice(), 3) // compression level 3 for good balance
+            .map_err(|e| PyValueError::new_err(format!("Compression error: {}", e)))
+    }
+
+    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        // First decompress with zstd
+        let decompressed = zstd::decode_all(state)
+            .map_err(|e| PyValueError::new_err(format!("Decompression error: {}", e)))?;
+        
+        // Then deserialize with bincode
+        let views: Vec<MSCTreeView> = bincode::deserialize(&decompressed)
+            .map_err(|e| PyValueError::new_err(format!("Deserialization error: {}", e)))?;
+        
+        // Convert back to Arc<PyMSCTopologyTreeView>
+        self.views = views.into_iter()
+            .map(|view| Arc::new(PyMSCTopologyTreeView { inner: view }))
+            .collect();
+        Ok(())
     }
 }
 
