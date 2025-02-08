@@ -1,10 +1,12 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::collections::{HashSet, HashMap, BTreeMap};
 
-use crate::porcelain::{CompleteTreeView, DistanceMatrixView, MSCTreeView, TopologyTreeView};
+use crate::porcelain::{
+    CompleteTreeView, DistanceMatrixView, MSCTreeView, TopologyTreeView, TreeViewBase, TreeViewType,
+};
 use crate::tree::{MSCTreeCollection, TaxonSet, Tree, TreeCollection};
 
 /// A Python wrapper for CompleteTreeView
@@ -50,13 +52,61 @@ pub struct PyTaxonSet {
     inner: Arc<TaxonSet>,
 }
 
+/// A Python wrapper for MSCTreeView in topology-only mode
+#[pyclass(name = "MSCTopologySet")]
+#[derive(Clone)]
+pub struct PyMSCTopologyTreeView {
+    inner: MSCTreeView,
+}
+
 #[pymethods]
 impl PyCompleteTreeView {
     #[new]
-    fn new(newick_str: &str) -> PyResult<Self> {
-        CompleteTreeView::from_newick_string(newick_str)
-            .map(|inner| PyCompleteTreeView { inner })
-            .map_err(|e| PyValueError::new_err(e))
+    fn new(arg: Bound<'_, PyAny>) -> PyResult<Self> {
+        // If input is a string, use existing newick parser
+        if let Ok(newick_str) = arg.extract::<String>() {
+            return CompleteTreeView::from_newick_string(&newick_str)
+                .map(|inner| PyCompleteTreeView { inner })
+                .map_err(|e| PyValueError::new_err(e));
+        }
+
+        // If input is a list, combine the trees
+        if let Ok(tree_list) = arg.downcast::<PyList>() {
+            let mut collection = TreeCollection::new(false);
+
+            // First pass: merge all taxon sets
+            for item in tree_list.iter() {
+                let tree: PySingleTree = item.extract()?;
+                for (name, _) in tree.taxon_set.to_id.iter() {
+                    collection.taxon_set.request(name.clone());
+                }
+            }
+
+            // Second pass: add trees with remapped taxa
+            for item in tree_list.iter() {
+                let tree: PySingleTree = item.extract()?;
+                let mut id_map = HashMap::new();
+                for (name, &old_id) in tree.taxon_set.to_id.iter() {
+                    let new_id = collection.taxon_set.to_id[name];
+                    id_map.insert(old_id, new_id);
+                }
+                let mut new_tree = (*tree.tree).clone();
+                new_tree.remap_taxa(&id_map);
+                collection.trees.push(new_tree);
+            }
+
+            return Ok(PyCompleteTreeView {
+                inner: CompleteTreeView(TreeViewBase {
+                    taxon_set: Arc::new(collection.taxon_set),
+                    trees: collection.trees.into(),
+                    topology_only: false,
+                }),
+            });
+        }
+
+        Err(PyValueError::new_err(
+            "Argument must be either a Newick string or a list of Tree objects",
+        ))
     }
 
     #[getter]
@@ -103,7 +153,7 @@ impl PyCompleteTreeView {
         if index >= self.inner.ngenes() {
             return Err(PyValueError::new_err("Tree index out of bounds"));
         }
-        
+
         Ok(PySingleTree {
             taxon_set: Arc::clone(&self.inner.0.taxon_set),
             tree: Arc::new(self.inner.0.trees[index].clone()),
@@ -113,8 +163,28 @@ impl PyCompleteTreeView {
     #[getter]
     fn taxon_set(&self) -> PyTaxonSet {
         PyTaxonSet {
-            inner: Arc::clone(&self.inner.0.taxon_set)
+            inner: Arc::clone(&self.inner.0.taxon_set),
         }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.ngenes()
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "TreeSet with {} trees, {} taxa",
+            self.inner.ngenes(),
+            self.inner.ntaxa()
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TreeSet('{}')", self.inner.to_newick_string())
+    }
+
+    fn newick(&self) -> String {
+        self.inner.to_newick_string()
     }
 }
 
@@ -173,7 +243,7 @@ impl PyTopologyTreeView {
         if index >= self.inner.ngenes() {
             return Err(PyValueError::new_err("Tree index out of bounds"));
         }
-        
+
         Ok(PySingleTree {
             taxon_set: Arc::clone(&self.inner.0.taxon_set),
             tree: Arc::new(self.inner.0.trees[index].clone()),
@@ -183,8 +253,28 @@ impl PyTopologyTreeView {
     #[getter]
     fn taxon_set(&self) -> PyTaxonSet {
         PyTaxonSet {
-            inner: Arc::clone(&self.inner.0.taxon_set)
+            inner: Arc::clone(&self.inner.0.taxon_set),
         }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.ngenes()
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "TopologySet with {} trees, {} taxa",
+            self.inner.ngenes(),
+            self.inner.ntaxa()
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TopologySet('{}')", self.inner.to_newick_string())
+    }
+
+    fn newick(&self) -> String {
+        self.inner.to_newick_string()
     }
 }
 
@@ -192,16 +282,16 @@ impl PyTopologyTreeView {
 impl PyMSCTreeView {
     #[new]
     fn new(gene_trees: &str, species_tree: &str) -> PyResult<Self> {
-        let mut collection = MSCTreeCollection::new();
+        let mut collection = MSCTreeCollection::new(false);
 
         // Parse gene trees
-        let gene_collection =
-            TreeCollection::from_newick_string(gene_trees).map_err(|e| PyValueError::new_err(e))?;
+        let gene_collection = TreeCollection::from_newick_string(gene_trees, false)
+            .map_err(|e| PyValueError::new_err(e))?;
         collection.taxon_set = gene_collection.taxon_set;
         collection.gene_trees = gene_collection.trees;
 
         // Parse species tree
-        let species_collection = TreeCollection::from_newick_string(species_tree)
+        let species_collection = TreeCollection::from_newick_string(species_tree, false)
             .map_err(|e| PyValueError::new_err(e))?;
         if !species_collection.trees.is_empty() {
             collection.species_tree = species_collection.trees[0].clone();
@@ -272,25 +362,80 @@ impl PyMSCTreeView {
         if index >= self.inner.ngenes() {
             return Err(PyValueError::new_err("Tree index out of bounds"));
         }
-        
+
+        let tree = self
+            .inner
+            .get_tree(index)
+            .expect("Index was checked to be in bounds");
+
+        let taxon_set = match &self.inner.base {
+            TreeViewType::Complete(base) => &base.taxon_set,
+            TreeViewType::Topology(base) => &base.taxon_set,
+        };
+
         Ok(PySingleTree {
-            taxon_set: Arc::clone(&self.inner.base.taxon_set),
-            tree: Arc::new(self.inner.base.trees[index].clone()),
+            taxon_set: Arc::clone(taxon_set),
+            tree: Arc::new(tree.clone()),
         })
     }
 
     fn get_species_tree(&self) -> PySingleTree {
+        let tree = self
+            .inner
+            .species_tree
+            .get_tree(0)
+            .expect("Species tree should always have exactly one tree");
+
+        let taxon_set = match &self.inner.base {
+            TreeViewType::Complete(base) => &base.taxon_set,
+            TreeViewType::Topology(base) => &base.taxon_set,
+        };
+
         PySingleTree {
-            taxon_set: Arc::clone(&self.inner.base.taxon_set),
-            tree: Arc::clone(&self.inner.species_tree),
+            taxon_set: Arc::clone(taxon_set),
+            tree: Arc::new(tree.clone()),
         }
     }
 
     #[getter]
     fn taxon_set(&self) -> PyTaxonSet {
+        let taxon_set = match &self.inner.base {
+            TreeViewType::Complete(base) => &base.taxon_set,
+            TreeViewType::Topology(base) => &base.taxon_set,
+        };
         PyTaxonSet {
-            inner: Arc::clone(&self.inner.base.taxon_set)
+            inner: Arc::clone(taxon_set),
         }
+    }
+
+    fn as_topology(&self) -> PyMSCTopologyTreeView {
+        PyMSCTopologyTreeView {
+            inner: self.inner.clone().as_topology(),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.ngenes()
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "MSCTreeSet with {} gene trees, {} taxa",
+            self.inner.ngenes(),
+            self.inner.ntaxa()
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MSCTreeSet('{}', '{}')",
+            self.inner.to_newick_string(),
+            self.inner.species_tree_to_newick()
+        )
+    }
+
+    fn newick(&self) -> String {
+        self.inner.to_newick_string()
     }
 }
 
@@ -357,7 +502,7 @@ impl PyDistanceMatrixView {
     #[getter]
     fn taxon_set(&self) -> PyTaxonSet {
         PyTaxonSet {
-            inner: Arc::clone(&self.inner.taxon_set)
+            inner: Arc::clone(&self.inner.taxon_set),
         }
     }
 }
@@ -366,9 +511,9 @@ impl PyDistanceMatrixView {
 impl PySingleTree {
     #[new]
     fn new(newick_str: &str) -> PyResult<Self> {
-        let collection = TreeCollection::from_newick_string(newick_str)
+        let collection = TreeCollection::from_newick_string(newick_str, false)
             .map_err(|e| PyValueError::new_err(e))?;
-        
+
         if collection.trees.is_empty() {
             return Err(PyValueError::new_err("No tree found in input string"));
         }
@@ -393,7 +538,7 @@ impl PySingleTree {
             inner: DistanceMatrixView {
                 matrix: Arc::new(self.tree.distance_matrix()),
                 taxon_set: Arc::clone(&self.taxon_set),
-            }
+            },
         }
     }
 
@@ -433,7 +578,10 @@ impl PySingleTree {
             if let Some(id) = self.taxon_set.to_id.get(taxon.as_str()) {
                 keep_taxa.insert(*id);
             } else {
-                return Err(PyValueError::new_err(format!("Taxon '{}' not found in tree", taxon)));
+                return Err(PyValueError::new_err(format!(
+                    "Taxon '{}' not found in tree",
+                    taxon
+                )));
             }
         }
 
@@ -470,8 +618,12 @@ impl PySingleTree {
     #[getter]
     fn taxon_set(&self) -> PyTaxonSet {
         PyTaxonSet {
-            inner: Arc::clone(&self.taxon_set)
+            inner: Arc::clone(&self.taxon_set),
         }
+    }
+
+    fn __len__(&self) -> usize {
+        self.tree.num_nodes()
     }
 }
 
@@ -512,5 +664,142 @@ impl PyTaxonSet {
 
     fn __contains__(&self, item: &str) -> bool {
         self.inner.to_id.contains_key(item)
+    }
+}
+
+#[pymethods]
+impl PyMSCTopologyTreeView {
+    #[new]
+    fn new(gene_trees: &str, species_tree: &str) -> PyResult<Self> {
+        let msc_view = PyMSCTreeView::new(gene_trees, species_tree)?;
+        Ok(PyMSCTopologyTreeView {
+            inner: msc_view.inner.as_topology(),
+        })
+    }
+
+    #[getter]
+    fn ngenes(&self) -> usize {
+        self.inner.ngenes()
+    }
+
+    #[getter]
+    fn ntaxa(&self) -> usize {
+        self.inner.ntaxa()
+    }
+
+    fn slice(&self, start: usize, end: usize) -> PyResult<Self> {
+        Ok(PyMSCTopologyTreeView {
+            inner: self.inner.slice(start, end),
+        })
+    }
+
+    fn get_distance_matrix(&self, index: usize) -> Option<PyDistanceMatrixView> {
+        self.inner
+            .get_distance_matrix(index)
+            .map(|inner| PyDistanceMatrixView { inner })
+    }
+
+    fn get_species_distance_matrix(&self) -> PyDistanceMatrixView {
+        PyDistanceMatrixView {
+            inner: self.inner.get_species_distance_matrix(),
+        }
+    }
+
+    fn get_taxon_name(&self, id: usize) -> Option<String> {
+        self.inner.get_taxon_name(id).map(String::from)
+    }
+
+    fn to_newick_vec(&self) -> Vec<String> {
+        self.inner.to_newick_vec()
+    }
+
+    fn to_newick_string(&self) -> String {
+        self.inner.to_newick_string()
+    }
+
+    fn species_tree_to_newick(&self) -> String {
+        self.inner.species_tree_to_newick()
+    }
+
+    fn restriction(&self, taxa: Vec<String>) -> PyResult<Self> {
+        let taxa_refs: Vec<&str> = taxa.iter().map(|s| s.as_str()).collect();
+        self.inner
+            .restriction(&taxa_refs)
+            .map(|inner| PyMSCTopologyTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
+    }
+
+    fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
+        if index >= self.inner.ngenes() {
+            return Err(PyValueError::new_err("Tree index out of bounds"));
+        }
+
+        let tree = self
+            .inner
+            .get_tree(index)
+            .expect("Index was checked to be in bounds");
+
+        let taxon_set = match &self.inner.base {
+            TreeViewType::Complete(base) => &base.taxon_set,
+            TreeViewType::Topology(base) => &base.taxon_set,
+        };
+
+        Ok(PySingleTree {
+            taxon_set: Arc::clone(taxon_set),
+            tree: Arc::new(tree.clone()),
+        })
+    }
+
+    fn get_species_tree(&self) -> PySingleTree {
+        let tree = self
+            .inner
+            .species_tree
+            .get_tree(0)
+            .expect("Species tree should always have exactly one tree");
+
+        let taxon_set = match &self.inner.base {
+            TreeViewType::Complete(base) => &base.taxon_set,
+            TreeViewType::Topology(base) => &base.taxon_set,
+        };
+
+        PySingleTree {
+            taxon_set: Arc::clone(taxon_set),
+            tree: Arc::new(tree.clone()),
+        }
+    }
+
+    #[getter]
+    fn taxon_set(&self) -> PyTaxonSet {
+        let taxon_set = match &self.inner.base {
+            TreeViewType::Complete(base) => &base.taxon_set,
+            TreeViewType::Topology(base) => &base.taxon_set,
+        };
+        PyTaxonSet {
+            inner: Arc::clone(taxon_set),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.ngenes()
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "MSCTopologySet with {} gene trees, {} taxa",
+            self.inner.ngenes(),
+            self.inner.ntaxa()
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MSCTopologySet('{}', '{}')",
+            self.inner.to_newick_string(),
+            self.inner.species_tree_to_newick()
+        )
+    }
+
+    fn newick(&self) -> String {
+        self.inner.to_newick_string()
     }
 }

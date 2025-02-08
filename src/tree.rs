@@ -179,7 +179,7 @@ impl Tree {
             new_firstchild.push(-1);
             new_nextsib.push(-1);
             new_childcount.push(0);
-            
+
             // Accumulate branch lengths through unifurcations
             let mut length = self.lengths[node];
             let mut curr = node;
@@ -188,7 +188,7 @@ impl Tree {
                 length += self.lengths[curr];
             }
             new_lengths.push(length);
-            
+
             // Use support from lowest unifurcation
             new_support.push(self.support[node]);
 
@@ -227,7 +227,11 @@ impl Tree {
         let post_order: Vec<usize> = self.postorder().collect();
         for &node in &post_order {
             if self.is_leaf(node) {
-                kept_counts[node] = if keep_taxa.contains(&(self.taxa[node] as usize)) { 1 } else { 0 };
+                kept_counts[node] = if keep_taxa.contains(&(self.taxa[node] as usize)) {
+                    1
+                } else {
+                    0
+                };
             } else {
                 let mut sum = 0;
                 for child in self.children(node) {
@@ -297,7 +301,8 @@ impl Tree {
 
             // For leaves, use the taxon id from id_map. For internal nodes, keep it as -1.
             let taxon_val = if self.is_leaf(node) {
-                id_map.get(&(self.taxa[node] as usize))
+                id_map
+                    .get(&(self.taxa[node] as usize))
                     .map(|&id| id as i32)
                     .unwrap_or(-1)
             } else {
@@ -343,12 +348,21 @@ impl Tree {
     pub fn distance_matrix(&self) -> DistanceMatrix {
         DistanceMatrix::compute_topological(self)
     }
+
+    pub fn remap_taxa(&mut self, id_map: &HashMap<usize, usize>) {
+        for taxon_id in self.taxa.iter_mut() {
+            if let Some(&new_id) = id_map.get(&(*taxon_id as usize)) {
+                *taxon_id = new_id as i32;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TreeCollection {
     pub taxon_set: TaxonSet,
     pub trees: Vec<Tree>,
+    pub topology_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -356,12 +370,18 @@ pub struct MSCTreeCollection {
     pub taxon_set: TaxonSet,
     pub gene_trees: Vec<Tree>,
     pub species_tree: Tree,
+    pub topology_only: bool,
 }
 
 /// Common functionality for collections of trees
 pub trait TreeCollectionTrait {
     fn taxon_set(&self) -> &TaxonSet;
     fn trees(&self) -> &[Tree];
+
+    // Add this method to determine if we should include branch lengths
+    fn include_branch_lengths(&self) -> bool {
+        true // Default implementation includes branch lengths
+    }
 
     fn ngenes(&self) -> usize {
         self.trees().len()
@@ -373,7 +393,13 @@ pub trait TreeCollectionTrait {
 
     /// Convert a single tree to Newick format
     fn tree_to_newick(&self, tree: &Tree) -> String {
-        fn write_subtree(tree: &Tree, node: usize, taxon_set: &TaxonSet, result: &mut String) {
+        fn write_subtree(
+            tree: &Tree,
+            node: usize,
+            taxon_set: &TaxonSet,
+            include_lengths: bool,
+            result: &mut String,
+        ) {
             if tree.is_leaf(node) {
                 result.push_str(&taxon_set.names[tree.taxa[node] as usize]);
             } else {
@@ -384,8 +410,8 @@ pub trait TreeCollectionTrait {
                         result.push(',');
                     }
                     first = false;
-                    write_subtree(tree, child, taxon_set, result);
-                    if tree.lengths[child] >= 0.0 {
+                    write_subtree(tree, child, taxon_set, include_lengths, result);
+                    if include_lengths && tree.lengths[child] >= 0.0 {
                         result.push(':');
                         result.push_str(&tree.lengths[child].to_string());
                     }
@@ -395,7 +421,13 @@ pub trait TreeCollectionTrait {
         }
 
         let mut result = String::new();
-        write_subtree(tree, 0, self.taxon_set(), &mut result);
+        write_subtree(
+            tree,
+            0,
+            self.taxon_set(),
+            self.include_branch_lengths(),
+            &mut result,
+        );
         result.push(';');
         result
     }
@@ -426,10 +458,14 @@ impl TreeCollectionTrait for TreeCollection {
     fn trees(&self) -> &[Tree] {
         &self.trees
     }
+
+    fn include_branch_lengths(&self) -> bool {
+        !self.topology_only
+    }
 }
 
 impl MSCTreeCollection {
-    pub fn new() -> Self {
+    pub fn new(topology_only: bool) -> Self {
         MSCTreeCollection {
             taxon_set: TaxonSet::new(),
             gene_trees: Vec::new(),
@@ -444,6 +480,7 @@ impl MSCTreeCollection {
                 fake_root: false,
                 ntaxa: 0,
             },
+            topology_only,
         }
     }
 
@@ -459,6 +496,10 @@ impl TreeCollectionTrait for MSCTreeCollection {
 
     fn trees(&self) -> &[Tree] {
         &self.gene_trees
+    }
+
+    fn include_branch_lengths(&self) -> bool {
+        !self.topology_only
     }
 }
 
@@ -680,7 +721,15 @@ pub fn parse_newick(taxon_set: &mut TaxonSet, newick: &str) -> Tree {
 }
 
 impl TreeCollection {
-    pub fn from_newick_string(newick_str: &str) -> Result<Self, String> {
+    pub fn new(topology_only: bool) -> Self {
+        TreeCollection {
+            taxon_set: TaxonSet::new(),
+            trees: Vec::new(),
+            topology_only,
+        }
+    }
+
+    pub fn from_newick_string(newick_str: &str, topology_only: bool) -> Result<Self, String> {
         let mut taxon_set = TaxonSet::new();
         let mut trees = Vec::new();
 
@@ -692,7 +741,11 @@ impl TreeCollection {
             return Err("No valid trees found in input string".to_string());
         }
 
-        Ok(TreeCollection { taxon_set, trees })
+        Ok(TreeCollection {
+            taxon_set,
+            trees,
+            topology_only,
+        })
     }
 }
 
