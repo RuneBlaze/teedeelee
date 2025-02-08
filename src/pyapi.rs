@@ -192,7 +192,11 @@ impl PyCompleteTreeView {
 
     fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
         if index >= self.inner.ngenes() {
-            return Err(PyValueError::new_err("Tree index out of bounds"));
+            return Err(PyIndexError::new_err(format!(
+                "Tree index {} out of bounds. Valid range: 0..{}",
+                index,
+                self.inner.ngenes()
+            )));
         }
 
         Ok(PySingleTree {
@@ -310,7 +314,11 @@ impl PyTopologyTreeView {
 
     fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
         if index >= self.inner.ngenes() {
-            return Err(PyValueError::new_err("Tree index out of bounds"));
+            return Err(PyIndexError::new_err(format!(
+                "Tree index {} out of bounds. Valid range: 0..{}",
+                index,
+                self.inner.ngenes()
+            )));
         }
 
         Ok(PySingleTree {
@@ -456,7 +464,11 @@ impl PyMSCTreeView {
 
     fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
         if index >= self.inner.ngenes() {
-            return Err(PyValueError::new_err("Tree index out of bounds"));
+            return Err(PyIndexError::new_err(format!(
+                "Tree index {} out of bounds. Valid range: 0..{}",
+                index,
+                self.inner.ngenes()
+            )));
         }
 
         let tree = self
@@ -611,7 +623,12 @@ impl PyDistanceMatrixView {
             let j: usize = item1.extract()?;
 
             if i >= self.inner.ntaxa() || j >= self.inner.ntaxa() {
-                return Err(PyValueError::new_err("Index out of bounds"));
+                return Err(PyIndexError::new_err(format!(
+                    "Index ({}, {}) out of bounds. Valid range: 0..{}",
+                    i,
+                    j,
+                    self.inner.ntaxa()
+                )));
             }
 
             return Ok(self.inner.get(i, j));
@@ -898,6 +915,10 @@ impl PySingleTree {
         self.tree = Arc::new(tree);
         Ok(())
     }
+
+    fn newick(&self) -> String {
+        self.to_newick()
+    }
 }
 
 #[pymethods]
@@ -1033,7 +1054,7 @@ impl PyMSCTopologyTreeView {
 
     fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
         self.inner.get_tree(index)
-            .ok_or_else(|| PyValueError::new_err("Index out of bounds"))
+            .ok_or_else(|| PyIndexError::new_err("Index out of bounds"))
             .map(|tree| PySingleTree {
                 taxon_set: Arc::new(self.inner.taxon_set().clone()),
                 tree: Arc::new(tree.clone()),

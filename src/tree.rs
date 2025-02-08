@@ -13,6 +13,117 @@ pub struct TaxonSet {
     last: usize,
 }
 
+/// Helper struct for building a restricted version of a tree
+struct RestrictedTreeBuilder {
+    new_taxa: Vec<i32>,
+    new_parents: Vec<i32>,
+    new_firstchild: Vec<i32>,
+    new_nextsib: Vec<i32>, 
+    new_childcount: Vec<u32>,
+    node_map: HashMap<usize, usize>,
+    next_idx: usize,
+    ntaxa: usize,
+}
+
+impl RestrictedTreeBuilder {
+    fn new() -> Self {
+        RestrictedTreeBuilder {
+            new_taxa: vec![-1], // Initialize with root node
+            new_parents: vec![0],
+            new_firstchild: vec![-1],
+            new_nextsib: vec![-1],
+            new_childcount: vec![0],
+            node_map: HashMap::new(),
+            next_idx: 1,
+            ntaxa: 0,
+        }
+    }
+
+    /// Compute the number of kept taxa in each subtree
+    fn compute_kept_counts(tree: &Tree, keep_taxa: &HashSet<usize>) -> Vec<usize> {
+        let mut kept_counts = vec![0usize; tree.taxa.len()];
+        let post_order: Vec<usize> = tree.postorder().collect();
+        
+        for &node in &post_order {
+            if tree.is_leaf(node) {
+                kept_counts[node] = if keep_taxa.contains(&(tree.taxa[node] as usize)) {
+                    1
+                } else {
+                    0
+                };
+            } else {
+                kept_counts[node] = tree.children(node)
+                    .map(|child| kept_counts[child])
+                    .sum();
+            }
+        }
+        kept_counts
+    }
+
+    /// Determine which nodes are essential and should be kept in the restricted tree
+    fn compute_essential_nodes(tree: &Tree, keep_taxa: &HashSet<usize>, kept_counts: &[usize]) -> HashSet<usize> {
+        let mut essential_nodes = HashSet::new();
+        for node in 0..tree.taxa.len() {
+            if node == 0  // Keep root
+                || (tree.is_leaf(node) && keep_taxa.contains(&(tree.taxa[node] as usize))) // Keep kept leaves
+                || kept_counts[node] > 1 // Keep internal nodes with multiple kept descendants
+            {
+                essential_nodes.insert(node);
+            }
+        }
+        essential_nodes
+    }
+
+    /// Find the nearest essential ancestor of a node
+    fn find_nearest_essential_ancestor(tree: &Tree, node: usize, essential_nodes: &HashSet<usize>) -> usize {
+        let mut p = tree.parents[node] as usize;
+        while !essential_nodes.contains(&p) {
+            p = tree.parents[p] as usize;
+        }
+        p
+    }
+
+    /// Add a node to the new tree structure
+    fn add_node(&mut self, node: usize, parent_idx: usize, taxon_val: i32) {
+        self.node_map.insert(node, self.next_idx);
+        
+        self.new_taxa.push(taxon_val);
+        self.new_parents.push(parent_idx as i32);
+        self.new_firstchild.push(-1);
+        self.new_nextsib.push(-1);
+        self.new_childcount.push(0);
+
+        // Update parent's child pointers
+        self.new_childcount[parent_idx] += 1;
+        if self.new_firstchild[parent_idx] == -1 {
+            self.new_firstchild[parent_idx] = self.next_idx as i32;
+        } else {
+            let mut sibling = self.new_firstchild[parent_idx] as usize;
+            while self.new_nextsib[sibling] != -1 {
+                sibling = self.new_nextsib[sibling] as usize;
+            }
+            self.new_nextsib[sibling] = self.next_idx as i32;
+        }
+
+        self.next_idx += 1;
+    }
+
+    /// Build the final restricted tree
+    fn build(self) -> Tree {
+        Tree {
+            taxa: self.new_taxa,
+            parents: self.new_parents,
+            support: vec![0.0; self.next_idx],
+            lengths: vec![0.0; self.next_idx],
+            firstchild: self.new_firstchild,
+            nextsib: self.new_nextsib,
+            childcount: self.new_childcount,
+            fake_root: false,
+            ntaxa: self.ntaxa,
+        }
+    }
+}
+
 // The output is wrapped in a Result to allow matching on errors
 // Returns an Iterator to the Reader of the lines of the file.
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
@@ -136,220 +247,63 @@ impl Tree {
     /// Suppresses unifurcations in the tree by removing nodes with exactly one child
     /// Returns None if there are no unifurcations to suppress
     fn suppress_unifurcations(&self) -> Option<Tree> {
-        // Fast path: check if there are any unifurcations
-        let has_unifurcations = (1..self.taxa.len()).any(|node| self.childcount[node] == 1);
-        if !has_unifurcations {
-            return None;
-        }
-
-        let mut new_taxa = vec![-1];
-        let mut new_parents = vec![0];
-        let mut new_firstchild = vec![-1];
-        let mut new_nextsib = vec![-1];
-        let mut new_childcount = vec![0];
-        let mut new_support = vec![0.0];
-        let mut new_lengths = vec![0.0];
-
-        // Map from old node indices to new node indices
-        let mut node_map = HashMap::new();
-        node_map.insert(0, 0);
-        let mut next_idx = 1;
-
-        // Process all nodes except root
-        for node in 1..self.taxa.len() {
-            // Skip nodes with exactly one child
-            if self.childcount[node] == 1 {
-                continue;
-            }
-
-            // Find effective parent (skip unifurcation nodes)
-            let mut parent = self.parents[node] as usize;
-            while parent != 0 && self.childcount[parent] == 1 {
-                parent = self.parents[parent] as usize;
-            }
-
-            let parent_idx = node_map[&parent];
-            let new_idx = next_idx;
-            next_idx += 1;
-            node_map.insert(node, new_idx);
-
-            // Add node to new tree
-            new_taxa.push(self.taxa[node]);
-            new_parents.push(parent_idx as i32);
-            new_firstchild.push(-1);
-            new_nextsib.push(-1);
-            new_childcount.push(0);
-
-            // Accumulate branch lengths through unifurcations
-            let mut length = self.lengths[node];
-            let mut curr = node;
-            while self.parents[curr] as usize != parent {
-                curr = self.parents[curr] as usize;
-                length += self.lengths[curr];
-            }
-            new_lengths.push(length);
-
-            // Use support from lowest unifurcation
-            new_support.push(self.support[node]);
-
-            // Update parent's child pointers
-            new_childcount[parent_idx] += 1;
-            if new_firstchild[parent_idx] == -1 {
-                new_firstchild[parent_idx] = new_idx as i32;
+        // Delegate to TreeBuilder to clearly separate the algorithm.
+        if let Some(builder) = TreeBuilder::new(self) {
+            let suppressed_tree = builder.build();
+            // If the new tree's root has a single child, unwrap it by re-rooting.
+            if suppressed_tree.childcount[0] == 1 {
+                let new_root = suppressed_tree.firstchild[0] as usize;
+                Some(suppressed_tree.re_root(new_root))
             } else {
-                let mut sibling = new_firstchild[parent_idx] as usize;
-                while new_nextsib[sibling] != -1 {
-                    sibling = new_nextsib[sibling] as usize;
-                }
-                new_nextsib[sibling] = new_idx as i32;
+                Some(suppressed_tree)
             }
+        } else {
+            None
         }
-
-        let suppressed_tree = Tree {
-            taxa: new_taxa,
-            parents: new_parents,
-            support: new_support,
-            lengths: new_lengths,
-            firstchild: new_firstchild,
-            nextsib: new_nextsib,
-            childcount: new_childcount,
-            fake_root: self.fake_root,
-            ntaxa: self.ntaxa,
-        };
-
-        // If the suppressed tree's root (node 0) has a single child then unwrap it by re-rooting.
-        if suppressed_tree.childcount[0] == 1 {
-            let new_root = suppressed_tree.firstchild[0] as usize;
-            return Some(suppressed_tree.re_root(new_root));
-        }
-
-        Some(suppressed_tree)
     }
 
     /// Creates a restricted version of the tree containing only the specified taxa,
     /// suppressing unifurcations (i.e. collapsing internal nodes with only one kept descendant).
     pub fn restrict(&self, keep_taxa: &HashSet<usize>, id_map: &HashMap<usize, usize>) -> Tree {
-        // First pass: compute, for each node, the number of kept taxa in its subtree.
-        let mut kept_counts = vec![0usize; self.taxa.len()];
-        let post_order: Vec<usize> = self.postorder().collect();
-        for &node in &post_order {
-            if self.is_leaf(node) {
-                kept_counts[node] = if keep_taxa.contains(&(self.taxa[node] as usize)) {
-                    1
-                } else {
-                    0
-                };
-            } else {
-                let mut sum = 0;
-                for child in self.children(node) {
-                    sum += kept_counts[child];
-                }
-                kept_counts[node] = sum;
-            }
-        }
+        let kept_counts = RestrictedTreeBuilder::compute_kept_counts(self, keep_taxa);
+        let essential_nodes = RestrictedTreeBuilder::compute_essential_nodes(self, keep_taxa, &kept_counts);
+        
+        let mut builder = RestrictedTreeBuilder::new();
+        builder.ntaxa = keep_taxa.len();
+        builder.node_map.insert(0, 0);
 
-        // Determine essential nodes:
-        // Keep the node if it is the root,
-        // OR if it is a kept leaf,
-        // OR if it has at least 2 kept taxa in its subtree.
-        let mut essential_nodes = HashSet::new();
-        for node in 0..self.taxa.len() {
-            if node == 0
-                || (self.is_leaf(node) && keep_taxa.contains(&(self.taxa[node] as usize)))
-                || kept_counts[node] > 1
-            {
-                essential_nodes.insert(node);
-            }
-        }
-
-        // Build new tree structure using only essential nodes.
-        let mut new_taxa = vec![-1];
-        let mut new_parents = vec![0];
-        let mut new_firstchild = vec![-1];
-        let mut new_nextsib = vec![-1];
-        let mut new_childcount = vec![0];
-
-        // Map the root (node 0) to the new tree's root.
-        let mut node_map = HashMap::new();
-        node_map.insert(0, 0);
-        let mut next_idx = 1;
-
-        // Helper: find the nearest essential ancestor (it might be several levels above)
-        let nearest_essential = |node: usize| -> usize {
-            let mut p = self.parents[node] as usize;
-            while !essential_nodes.contains(&p) {
-                p = self.parents[p] as usize;
-            }
-            p
-        };
-
-        // Second pass: add only those nodes that are essential.
-        // (Start from 1 because root is already in the map.)
+        // Second pass: add only those nodes that are essential
         for node in 1..self.taxa.len() {
             if !essential_nodes.contains(&node) {
                 continue;
             }
-            // Get the effective parent: if the node's immediate parent is not essential,
-            // then collapse (skip) that unifurcation by finding the nearest essential ancestor.
+
+            // Get the effective parent
             let effective_parent = if essential_nodes.contains(&(self.parents[node] as usize)) {
                 self.parents[node] as usize
             } else {
-                nearest_essential(node)
+                RestrictedTreeBuilder::find_nearest_essential_ancestor(self, node, &essential_nodes)
             };
 
-            // (Because we traverse in increasing order, effective_parent should have already been processed.)
-            if !node_map.contains_key(&effective_parent) {
-                continue; // Should not happen with proper traversal
+            if !builder.node_map.contains_key(&effective_parent) {
+                continue;
             }
-            let parent_idx = node_map[&effective_parent];
-            let new_idx = next_idx;
-            next_idx += 1;
-            node_map.insert(node, new_idx);
 
-            // For leaves, use the taxon id from id_map. For internal nodes, keep it as -1.
+            let parent_idx = builder.node_map[&effective_parent];
             let taxon_val = if self.is_leaf(node) {
-                id_map
-                    .get(&(self.taxa[node] as usize))
+                id_map.get(&(self.taxa[node] as usize))
                     .map(|&id| id as i32)
                     .unwrap_or(-1)
             } else {
                 -1
             };
 
-            new_taxa.push(taxon_val);
-            new_parents.push(parent_idx as i32);
-            new_firstchild.push(-1);
-            new_nextsib.push(-1);
-            new_childcount.push(0);
-
-            // Update parent's child pointers.
-            new_childcount[parent_idx] += 1;
-            if new_firstchild[parent_idx] == -1 {
-                new_firstchild[parent_idx] = new_idx as i32;
-            } else {
-                let mut sibling = new_firstchild[parent_idx] as usize;
-                while new_nextsib[sibling] != -1 {
-                    sibling = new_nextsib[sibling] as usize;
-                }
-                new_nextsib[sibling] = new_idx as i32;
-            }
+            builder.add_node(node, parent_idx, taxon_val);
         }
 
-        // Create initial restricted tree
-        let restricted = Tree {
-            taxa: new_taxa,
-            parents: new_parents,
-            support: vec![0.0; next_idx],
-            lengths: vec![0.0; next_idx],
-            firstchild: new_firstchild,
-            nextsib: new_nextsib,
-            childcount: new_childcount,
-            fake_root: false,
-            ntaxa: keep_taxa.len(),
-        };
-
-        // Suppress any remaining unifurcations
-        restricted.suppress_unifurcations().unwrap_or(restricted)
+        // Build the restricted tree and suppress any unifurcations
+        let tree = builder.build();
+        tree.suppress_unifurcations().unwrap_or(tree)
     }
 
     pub fn distance_matrix(&self) -> DistanceMatrix {
@@ -821,7 +775,6 @@ pub fn parse_newick(taxon_set: &mut TaxonSet, newick: &str) -> Tree {
     let mut n: usize = 0; // the current node
     let mut chars = newick.chars().fuse().peekable();
     while let Some(c) = chars.next() {
-        // println!("{}", c);
         if c == ';' {
             break;
         } else if c == ' ' {
@@ -1090,5 +1043,109 @@ impl SortCriterion {
 
     pub fn descending(kind: SortCriterionKind) -> Self {
         SortCriterion { kind, order: SortOrder::Descending }
+    }
+}
+
+pub struct TreeBuilder {
+    pub new_taxa: Vec<i32>,
+    pub new_parents: Vec<i32>,
+    pub new_firstchild: Vec<i32>,
+    pub new_nextsib: Vec<i32>,
+    pub new_childcount: Vec<u32>,
+    pub new_support: Vec<f64>,
+    pub new_lengths: Vec<f64>,
+    pub fake_root: bool,
+    pub ntaxa: usize,
+    /// Maps indices from the original tree to the new tree
+    pub node_map: HashMap<usize, usize>,
+}
+
+impl TreeBuilder {
+    /// Creates a new TreeBuilder from the given tree.
+    /// Returns None if no unifurcations are found.
+    pub fn new(tree: &Tree) -> Option<Self> {
+        // Fast path: check if there are any unifurcations (nodes with exactly one child)
+        let has_unifurcations = (1..tree.taxa.len()).any(|node| tree.childcount[node] == 1);
+        if !has_unifurcations {
+            return None;
+        }
+
+        let mut builder = TreeBuilder {
+            new_taxa: vec![-1],           // initialize with root node
+            new_parents: vec![0],
+            new_firstchild: vec![-1],
+            new_nextsib: vec![-1],
+            new_childcount: vec![0],
+            new_support: vec![0.0],
+            new_lengths: vec![0.0],
+            fake_root: tree.fake_root,
+            ntaxa: tree.ntaxa,
+            node_map: HashMap::new(),
+        };
+        builder.node_map.insert(0, 0);
+        let mut next_idx = 1;
+
+        // Process all nodes except the root (starting from 1)
+        for node in 1..tree.taxa.len() {
+            // Skip nodes that are unifurcations (exactly one child).
+            if tree.childcount[node] == 1 {
+                continue;
+            }
+
+            // Find the effective parent (skipping unifurcation nodes).
+            let mut parent = tree.parents[node] as usize;
+            while parent != 0 && tree.childcount[parent] == 1 {
+                parent = tree.parents[parent] as usize;
+            }
+            let parent_idx = *builder.node_map.get(&parent).unwrap();
+            builder.node_map.insert(node, next_idx);
+
+            // Add the current node to the new tree.
+            builder.new_taxa.push(tree.taxa[node]);
+            builder.new_parents.push(parent_idx as i32);
+            builder.new_firstchild.push(-1);
+            builder.new_nextsib.push(-1);
+            builder.new_childcount.push(0);
+
+            // Accumulate branch lengths through any unifurcations that were skipped.
+            let mut length = tree.lengths[node];
+            let mut curr = node;
+            while tree.parents[curr] as usize != parent {
+                curr = tree.parents[curr] as usize;
+                length += tree.lengths[curr];
+            }
+            builder.new_lengths.push(length);
+            // Use the support value from the current (lowest) unifurcation.
+            builder.new_support.push(tree.support[node]);
+
+            // Update the parent's child pointers in the new tree.
+            builder.new_childcount[parent_idx] += 1;
+            if builder.new_firstchild[parent_idx] == -1 {
+                builder.new_firstchild[parent_idx] = next_idx as i32;
+            } else {
+                let mut sibling = builder.new_firstchild[parent_idx] as usize;
+                while builder.new_nextsib[sibling] != -1 {
+                    sibling = builder.new_nextsib[sibling] as usize;
+                }
+                builder.new_nextsib[sibling] = next_idx as i32;
+            }
+            next_idx += 1;
+        }
+        Some(builder)
+    }
+
+    /// Consumes the builder and returns the newly built (suppressed) Tree.
+    pub fn build(self) -> Tree {
+        Tree {
+            taxa: self.new_taxa,
+            parents: self.new_parents,
+            support: self.new_support,
+            lengths: self.new_lengths,
+            firstchild: self.new_firstchild,
+            nextsib: self.new_nextsib,
+            childcount: self.new_childcount,
+            fake_root: self.fake_root,
+            ntaxa: self.ntaxa,
+        }
     }
 }
