@@ -1,6 +1,6 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyList, PyTuple, PyType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -186,6 +186,15 @@ impl PyCompleteTreeView {
     fn newick(&self) -> String {
         self.inner.to_newick_string()
     }
+
+    #[classmethod]
+    fn from_file(_cls: Bound<'_, PyType>, path: &str) -> PyResult<Self> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read file: {}", e)))?;
+        CompleteTreeView::from_newick_string(&contents)
+            .map(|inner| PyCompleteTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
+    }
 }
 
 #[pymethods]
@@ -275,6 +284,15 @@ impl PyTopologyTreeView {
 
     fn newick(&self) -> String {
         self.inner.to_newick_string()
+    }
+
+    #[classmethod]
+    fn from_file(_cls: Bound<'_, PyType>, path: &str) -> PyResult<Self> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read file: {}", e)))?;
+        TopologyTreeView::from_newick_string(&contents)
+            .map(|inner| PyTopologyTreeView { inner })
+            .map_err(|e| PyValueError::new_err(e))
     }
 }
 
@@ -436,6 +454,16 @@ impl PyMSCTreeView {
 
     fn newick(&self) -> String {
         self.inner.to_newick_string()
+    }
+
+    #[classmethod]
+    fn from_files(_cls: Bound<'_, PyType>, gene_trees_path: &str, species_tree_path: &str) -> PyResult<Self> {
+        let gene_trees = std::fs::read_to_string(gene_trees_path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read gene trees file: {}", e)))?;
+        let species_tree = std::fs::read_to_string(species_tree_path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read species tree file: {}", e)))?;
+        
+        PyMSCTreeView::new(&gene_trees, &species_tree)
     }
 }
 
@@ -801,5 +829,15 @@ impl PyMSCTopologyTreeView {
 
     fn newick(&self) -> String {
         self.inner.to_newick_string()
+    }
+
+    #[classmethod]
+    fn from_files(_cls: Bound<'_, PyType>, gene_trees_path: &str, species_tree_path: &str) -> PyResult<Self> {
+        let gene_trees = std::fs::read_to_string(gene_trees_path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read gene trees file: {}", e)))?;
+        let species_tree = std::fs::read_to_string(species_tree_path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read species tree file: {}", e)))?;
+        
+        PyMSCTopologyTreeView::new(&gene_trees, &species_tree)
     }
 }
