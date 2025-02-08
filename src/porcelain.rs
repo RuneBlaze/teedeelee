@@ -2,13 +2,14 @@ use crate::tree::{
     DistanceMatrix, MSCTreeCollection, TaxonSet, Tree, TreeCollection, TreeCollectionTrait,
 };
 use either::Either;
+use serde::{Deserialize, Serialize};
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use std::sync::Arc;
 
 // Common functionality shared between Complete and Topology views
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct TreeViewBase {
     pub(crate) taxon_set: Arc<TaxonSet>,
     pub(crate) trees: Arc<[Tree]>,
@@ -17,29 +18,29 @@ pub(crate) struct TreeViewBase {
 
 /// A thread-safe, shareable view of a tree collection with complete information
 /// (including branch lengths and support values).
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CompleteTreeView(pub(crate) TreeViewBase);
 
 /// A thread-safe, shareable view of a tree collection with topology-only information
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TopologyTreeView(pub(crate) TreeViewBase);
 
 // Add this enum to represent the tree view type
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum TreeViewType {
     Complete(TreeViewBase),
     Topology(TreeViewBase),
 }
 
 /// A thread-safe, shareable view of a multi-species coalescent tree collection
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MSCTreeView {
     pub(crate) base: TreeViewType,
     pub(crate) species_tree: TreeViewType,
 }
 
 /// A thread-safe, shareable view of a distance matrix
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DistanceMatrixView {
     pub(crate) matrix: Arc<DistanceMatrix>,
     pub(crate) taxon_set: Arc<TaxonSet>,
@@ -495,6 +496,12 @@ impl MSCTreeView {
 
     pub fn iter(&self) -> impl Iterator<Item = &Tree> {
         self.base.iter()
+    }
+
+    pub fn taxon_set(&self) -> &TaxonSet {
+        match &self.base {
+            TreeViewType::Complete(base) | TreeViewType::Topology(base) => &base.taxon_set,
+        }
     }
 }
 

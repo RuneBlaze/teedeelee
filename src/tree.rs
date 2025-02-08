@@ -1,12 +1,13 @@
 use ahash::AHashSet;
 use rand::prelude::*;
-use std::collections::{HashSet};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::{cmp::min, collections::BTreeMap, collections::HashMap};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaxonSet {
     pub to_id: BTreeMap<String, usize>,
     pub names: Vec<String>, // TODO: no need to keep two copies of the same string
@@ -54,7 +55,7 @@ impl TaxonSet {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tree {
     pub taxa: Vec<i32>,
     pub parents: Vec<i32>,
@@ -358,14 +359,14 @@ impl Tree {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeCollection {
     pub taxon_set: TaxonSet,
     pub trees: Vec<Tree>,
     pub topology_only: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MSCTreeCollection {
     pub taxon_set: TaxonSet,
     pub gene_trees: Vec<Tree>,
@@ -749,7 +750,7 @@ impl TreeCollection {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistanceMatrix {
     pub(crate) distances: Vec<f64>,
     pub(crate) size: usize,

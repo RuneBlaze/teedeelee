@@ -59,6 +59,13 @@ pub struct PyMSCTopologyTreeView {
     inner: MSCTreeView,
 }
 
+/// A Python wrapper for a collection of MSC topology tree views
+#[pyclass(name = "FamilyOfMSC")]
+#[derive(Clone)]
+pub struct PyFamilyOfMSC {
+    views: Vec<Arc<PyMSCTopologyTreeView>>,
+}
+
 #[pymethods]
 impl PyCompleteTreeView {
     #[new]
@@ -457,12 +464,17 @@ impl PyMSCTreeView {
     }
 
     #[classmethod]
-    fn from_files(_cls: Bound<'_, PyType>, gene_trees_path: &str, species_tree_path: &str) -> PyResult<Self> {
+    fn from_files(
+        _cls: Bound<'_, PyType>,
+        gene_trees_path: &str,
+        species_tree_path: &str,
+    ) -> PyResult<Self> {
         let gene_trees = std::fs::read_to_string(gene_trees_path)
             .map_err(|e| PyValueError::new_err(format!("Failed to read gene trees file: {}", e)))?;
-        let species_tree = std::fs::read_to_string(species_tree_path)
-            .map_err(|e| PyValueError::new_err(format!("Failed to read species tree file: {}", e)))?;
-        
+        let species_tree = std::fs::read_to_string(species_tree_path).map_err(|e| {
+            PyValueError::new_err(format!("Failed to read species tree file: {}", e))
+        })?;
+
         PyMSCTreeView::new(&gene_trees, &species_tree)
     }
 }
@@ -758,24 +770,12 @@ impl PyMSCTopologyTreeView {
     }
 
     fn __getitem__(&self, index: usize) -> PyResult<PySingleTree> {
-        if index >= self.inner.ngenes() {
-            return Err(PyValueError::new_err("Tree index out of bounds"));
-        }
-
-        let tree = self
-            .inner
-            .get_tree(index)
-            .expect("Index was checked to be in bounds");
-
-        let taxon_set = match &self.inner.base {
-            TreeViewType::Complete(base) => &base.taxon_set,
-            TreeViewType::Topology(base) => &base.taxon_set,
-        };
-
-        Ok(PySingleTree {
-            taxon_set: Arc::clone(taxon_set),
-            tree: Arc::new(tree.clone()),
-        })
+        self.inner.get_tree(index)
+            .ok_or_else(|| PyValueError::new_err("Index out of bounds"))
+            .map(|tree| PySingleTree {
+                taxon_set: Arc::new(self.inner.taxon_set().clone()),
+                tree: Arc::new(tree.clone()),
+            })
     }
 
     fn get_species_tree(&self) -> PySingleTree {
@@ -832,12 +832,72 @@ impl PyMSCTopologyTreeView {
     }
 
     #[classmethod]
-    fn from_files(_cls: Bound<'_, PyType>, gene_trees_path: &str, species_tree_path: &str) -> PyResult<Self> {
+    fn from_files(
+        _cls: Bound<'_, PyType>,
+        gene_trees_path: &str,
+        species_tree_path: &str,
+    ) -> PyResult<Self> {
         let gene_trees = std::fs::read_to_string(gene_trees_path)
             .map_err(|e| PyValueError::new_err(format!("Failed to read gene trees file: {}", e)))?;
-        let species_tree = std::fs::read_to_string(species_tree_path)
-            .map_err(|e| PyValueError::new_err(format!("Failed to read species tree file: {}", e)))?;
-        
-        PyMSCTopologyTreeView::new(&gene_trees, &species_tree)
+        let species_tree = std::fs::read_to_string(species_tree_path).map_err(|e| {
+            PyValueError::new_err(format!("Failed to read species tree file: {}", e))
+        })?;
+
+        let view = PyMSCTopologyTreeView::new(&gene_trees, &species_tree)?;
+        Ok(view)
+    }
+}
+
+#[pymethods]
+impl PyFamilyOfMSC {
+    #[new]
+    fn new() -> Self {
+        PyFamilyOfMSC { views: Vec::new() }
+    }
+
+    fn add(&mut self, view: PyMSCTopologyTreeView) {
+        self.views.push(Arc::new(view));
+    }
+
+    fn __len__(&self) -> usize {
+        self.views.len()
+    }
+
+    fn __str__(&self) -> String {
+        format!("FamilyOfMSC with {} MSC topology sets", self.views.len())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FamilyOfMSC with {} members", self.views.len())
+    }
+
+    #[classmethod]
+    fn from_files(_cls: Bound<'_, PyType>, gene_trees_paths: Vec<String>, species_trees_paths: Vec<String>) -> PyResult<Self> {
+        if gene_trees_paths.len() != species_trees_paths.len() {
+            return Err(PyValueError::new_err(
+                "Number of gene trees files must match number of species trees files",
+            ));
+        }
+
+        let mut family = PyFamilyOfMSC::new();
+        for (gene_path, species_path) in gene_trees_paths.iter().zip(species_trees_paths.iter()) {
+            let view = PyMSCTopologyTreeView::from_files(_cls.clone(), gene_path, species_path)?;
+            family.add(view);
+        }
+        Ok(family)
+    }
+
+    fn get_sizes(&self) -> Vec<(usize, usize)> {
+        self.views
+            .iter()
+            .map(|view| (view.ngenes(), view.ntaxa()))
+            .collect()
+    }
+
+    fn __getitem__(&self, index: usize) -> PyResult<PyMSCTopologyTreeView> {
+        self.views
+            .get(index)
+            .map(|view| (**view).clone())
+            .ok_or_else(|| PyValueError::new_err("Index out of bounds"))
     }
 }
